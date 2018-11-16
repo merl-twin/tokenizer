@@ -5,6 +5,7 @@ extern crate unicode_segmentation;
 
 use unicode_segmentation::{UnicodeSegmentation,UWordBounds};
 use std::str::FromStr;
+use std::collections::VecDeque;
 
 mod emoji;
 
@@ -46,6 +47,7 @@ pub enum Token {
     Emoji(String),
     Unicode(String),
     Separator(Separator),
+    Url(String),
 }
 
 #[derive(Debug,Clone,PartialEq,PartialOrd)]
@@ -115,98 +117,207 @@ impl<'t> Iterator for Breaker<'t> {
     }
 }
 
-
 pub trait Tokenizer {
     fn next_token(&mut self) -> Option<PositionalToken>;
 }
 
 pub struct Tokens<'t> {
     offset: usize,
-    bounds: std::iter::Peekable<Breaker<'t>>,
+    bounds: Breaker<'t>,
+    buffer: VecDeque<BasicToken<'t>>,
 }
 impl<'t> Tokens<'t> {
     fn new<'a>(s: &'a str) -> Tokens<'a> {
         Tokens {
             offset: 0,
-            bounds: Breaker::new(s).peekable(),
+            bounds: Breaker::new(s),
+            buffer: VecDeque::new(),
         }
     }
+    fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
+        let tok = PositionalToken {
+            offset: self.offset,
+            length: s.len(),
+            token: match &s[0..1] {
+                " " => Token::Separator(Separator::Space),
+                "\n" => Token::Separator(Separator::Newline),
+                "\t" => Token::Separator(Separator::Tab),
+                _ => Token::Separator(Separator::Unknown),
+            }
+        };
+        self.offset += s.len();
+        tok
+    }
+    fn basic_number_to_pt(&mut self, s: &str) -> PositionalToken {
+        let tok = PositionalToken {
+            offset: self.offset,
+            length: s.len(),
+            token: match i64::from_str(s) {
+                Ok(n) => Token::Number(Number::Integer(n)),
+                Err(_) => {
+                    match f64::from_str(s) {
+                        Ok(n) => Token::Number(Number::Float(n)),
+                        Err(..) => Token::Word(s.to_string()),
+                    }
+                }
+            },
+        };
+        self.offset += s.len();
+        tok
+    }
+    fn basic_emoji_to_pt(&mut self, s: &str) -> PositionalToken {
+        let tok = PositionalToken {
+            offset: self.offset,
+            length: s.len(),
+            token: {
+                let rs = s.replace("\u{fe0f}","");
+                match EMOJIMAP.get(&rs as &str) {
+                    Some(em) => Token::Emoji(em.to_string()),
+                    None => Token::Unicode({
+                        let mut us = "".to_string();
+                        for c in rs.chars() {
+                            if us!="" { us += "_"; }
+                            us += "u";
+                            let ns = format!("{}",c.escape_unicode());
+                            us += &ns[3 .. ns.len()-1];
+                        }
+                        us
+                    }),
+                }
+            }
+        };
+        self.offset += s.len();
+        tok
+    }
+    fn basic_alphanumeric_to_pt(&mut self, s: &str) -> PositionalToken {
+        let tok = PositionalToken {
+            offset: self.offset,
+            length: s.len(),
+            token: Token::Word(s.to_string()),
+        };
+        self.offset += s.len();
+        tok
+    }
+    fn basic_punctuation_to_pt(&mut self, s: &str) -> PositionalToken {
+        let tok = PositionalToken {
+            offset: self.offset,
+            length: s.len(),
+            token: Token::Punctuation(s.to_string()),
+        };
+        self.offset += s.len();
+        tok
+    }
+    fn check_url(&mut self) -> Option<PositionalToken> {
+        let check = if self.buffer.len()>3 {
+            match (&self.buffer[0],&self.buffer[1],&self.buffer[2]) {
+                (BasicToken::Alphanumeric("http"),BasicToken::Punctuation(":"),BasicToken::Punctuation("//")) |
+                (BasicToken::Alphanumeric("https"),BasicToken::Punctuation(":"),BasicToken::Punctuation("//")) => true,
+                _ => false,
+            }
+        } else { false };
+        if check {
+            let mut url = "".to_string();
+            loop {
+                match self.buffer.pop_front() {
+                    None => break,
+                    Some(BasicToken::Separator(s)) => {
+                        self.buffer.push_front(BasicToken::Separator(s));
+                        break;
+                    },
+                    Some(BasicToken::Alphanumeric(s)) |
+                    Some(BasicToken::Number(s)) |
+                    Some(BasicToken::Punctuation(s)) |
+                    Some(BasicToken::Emoji(s)) => {
+                        url += s;
+                    },
+                }
+            }
+            let len = url.len();
+            let tok = PositionalToken {
+                offset: self.offset,
+                length: len,
+                token: Token::Url(url),
+            };
+            self.offset += len;
+            Some(tok)
+        } else { None }
+    }
+    fn check_hashtag(&mut self) -> Option<PositionalToken> {
+        let tok = if self.buffer.len()>1 {
+            match (&self.buffer[0],&self.buffer[1]) {
+                (BasicToken::Punctuation("#"),BasicToken::Alphanumeric(s)) |
+                (BasicToken::Punctuation("#"),BasicToken::Number(s)) => {
+                    let tok = PositionalToken {
+                        offset: self.offset,
+                        length: s.len()+1,
+                        token: Token::Hashtag(format!("#{}",s)),
+                    };
+                    self.offset += s.len()+1;
+                    Some(tok)
+                },
+                _ => None,
+            }
+        } else { None };
+        if tok.is_some() {
+            self.buffer.pop_front();
+            self.buffer.pop_front();
+        }
+        tok
+    }
+    fn check_mention(&mut self) -> Option<PositionalToken> {
+        let tok = if self.buffer.len()>1 {
+            match (&self.buffer[0],&self.buffer[1]) {
+                (BasicToken::Punctuation("@"),BasicToken::Alphanumeric(s)) |
+                (BasicToken::Punctuation("@"),BasicToken::Number(s)) => {
+                    let tok = PositionalToken {
+                        offset: self.offset,
+                        length: s.len()+1,
+                        token: Token::Hashtag(format!("@{}",s)),
+                    };
+                    self.offset += s.len()+1;
+                    Some(tok)
+                },
+                _ => None,
+            }
+        } else { None };
+        if tok.is_some() {
+            self.buffer.pop_front();
+            self.buffer.pop_front();
+        }
+        tok
+    }
 }
+
 impl<'t> Tokenizer for Tokens<'t> {
     fn next_token(&mut self) -> Option<PositionalToken> {
-        match self.bounds.next() {
-            Some(w) => {
-                let (tok,len) = match w {
-                    BasicToken::Alphanumeric(s) => { (Token::Word(s.to_string()), s.len()) },
-                    BasicToken::Number(s) => {
-                        (match i64::from_str(s) {
-                            Ok(n) => Token::Number(Number::Integer(n)),
-                            Err(_) => {
-                                match f64::from_str(s) {
-                                    Ok(n) => Token::Number(Number::Float(n)),
-                                    Err(..) => Token::Word(s.to_string()),
-                                }
-                            }
-                        }, s.len())
+        if self.buffer.len()>0 {
+            if let Some(t) = self.check_url() { return Some(t); }
+            if let Some(t) = self.check_hashtag() { return Some(t); }
+            if let Some(t) = self.check_mention() { return Some(t); }
+            match self.buffer.pop_front() {
+                Some(BasicToken::Alphanumeric(s)) => Some(self.basic_alphanumeric_to_pt(s)),
+                Some(BasicToken::Number(s)) => Some(self.basic_number_to_pt(s)),
+                Some(BasicToken::Punctuation(s)) => Some(self.basic_punctuation_to_pt(s)),
+                Some(BasicToken::Emoji(s)) => Some(self.basic_emoji_to_pt(s)),
+                Some(BasicToken::Separator(s)) => Some(self.basic_separator_to_pt(s)),
+                None => unreachable!(),
+            }
+        } else {
+            loop {
+                match self.bounds.next() {
+                    Some(BasicToken::Separator(s)) => {
+                        self.buffer.push_back(BasicToken::Separator(s));
+                        return self.next_token();
                     },
-                    BasicToken::Punctuation(s) => {
-                        if match (s.len()==1)&&((&s[0..1]=="#")||((&s[0..1]=="@"))) {
-                            true => match self.bounds.peek() {
-                                Some(BasicToken::Alphanumeric(..)) | Some(BasicToken::Number(..)) => true,
-                                _ => false,
-                            },
-                            false => false,
-                        } {
-                            match (s,self.bounds.next()) {
-                                ("#",Some(BasicToken::Alphanumeric(w))) |
-                                ("#",Some(BasicToken::Number(w))) => {
-                                    (Token::Hashtag(w.to_string()),w.len()+1)
-                                },
-                                ("@",Some(BasicToken::Alphanumeric(w))) |
-                                ("@",Some(BasicToken::Number(w))) => {
-                                    (Token::Mention(w.to_string()),w.len()+1)
-                                },
-                                _ => unreachable!(),
-                            }
-                        } else {
-                            (Token::Punctuation(s.to_string()), s.len())
-                        }
-                    },
-                    BasicToken::Emoji(s) => {
-                        let rs = s.replace("\u{fe0f}","");
-                        match EMOJIMAP.get(&rs as &str) {
-                            Some(em) => (Token::Emoji(em.to_string()), s.len()),
-                            None => (Token::Unicode({
-                                let mut us = "".to_string();
-                                for c in rs.chars() {
-                                    if us!="" { us += "_"; }
-                                    us += "u";
-                                    let ns = format!("{}",c.escape_unicode());
-                                    us += &ns[3 .. ns.len()-1];
-                                }
-                                us
-                            }), s.len()),
-                        }
-                    },
-                    BasicToken::Separator(s) => { (match &s[0..1] {
-                        " " => Token::Separator(Separator::Space),
-                        "\n" => Token::Separator(Separator::Newline),
-                        "\t" => Token::Separator(Separator::Tab),
-                        _ => Token::Separator(Separator::Unknown),
-                    }, s.len()) },
-                };
-                let r = PositionalToken {
-                    offset: self.offset,
-                    length: len,
-                    token: tok
-                };
-                self.offset += len;
-                Some(r)
-            },
-            None => None,
+                    Some(bt) => self.buffer.push_back(bt),
+                    None if self.buffer.len()>0 => return self.next_token(),
+                    None => return None,
+                }
+            }
         }
     }
 }
+
 impl<'t> Iterator for Tokens<'t> {
     type Item = PositionalToken;
 
@@ -226,16 +337,23 @@ impl<'t> IntoTokenizer for &'t str {
     }
 }
 
-/*
 
-fn main() {
-    let uws = "The quick (\"brown\") fox can't jump 32.3 feet, right? 4pda etc. qeq U.S.A  asd\n\n\nBrr, it's 29.3°F!\n Русское предложение #36.6 для тестирования деления по юникод-словам...\n🇷🇺 🇸🇹\n👱🏿👶🏽👨🏽\n👱\nС.С.С.Р.\n👨‍👩‍👦‍👦\n🧠\nSome ##text with #hashtags and @other components";
-    println!("{}\n",uws);
-    for tok in uws.into_tokens() {
-        match &tok.token {
-            Token::Separator(..) | Token::Punctuation(..) => continue,
-            _ => println!("{:?} [{}]",tok,&uws[tok.offset .. tok.offset+tok.length]),
+/*
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn main() {
+        let uws = "The quick (\"brown\") fox can't jump 32.3 feet, right? 4pda etc. qeq U.S.A  asd\n\n\nBrr, it's 29.3°F!\n Русское предложение #36.6 для тестирования деления по юникод-словам...\n🇷🇺 🇸🇹\n👱🏿👶🏽👨🏽\n👱\nС.С.С.Р.\n👨‍👩‍👦‍👦\n🧠\nSome ##text with #hashtags and @other components\nadfa wdsfdf asdf asd http://asdfasdfsd.com/fasdfd/sadfsadf/sdfas/12312_12414/asdf?fascvx=fsfwer&dsdfasdf=fasdf#fasdf asdfa sdfa sdf\nasdfas df asd who@bla-bla.com asdfas df asdfsd\n";
+        println!("{}\n",uws);
+        for tok in uws.into_tokens() {
+            match &tok.token {
+                //Token::Separator(..) | Token::Punctuation(..) => continue,
+                _ => println!("{:?} [{}]",tok,&uws[tok.offset .. tok.offset+tok.length]),
+            }
         }
+        panic!("")
     }
 }
-*/
+ */
