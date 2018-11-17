@@ -250,7 +250,7 @@ impl<'t> Tokens<'t> {
                     let tok = PositionalToken {
                         offset: self.offset,
                         length: s.len()+1,
-                        token: Token::Hashtag(format!("#{}",s)),
+                        token: Token::Hashtag(format!("{}",s)),
                     };
                     self.offset += s.len()+1;
                     Some(tok)
@@ -272,7 +272,7 @@ impl<'t> Tokens<'t> {
                     let tok = PositionalToken {
                         offset: self.offset,
                         length: s.len()+1,
-                        token: Token::Hashtag(format!("@{}",s)),
+                        token: Token::Mention(format!("{}",s)),
                     };
                     self.offset += s.len()+1;
                     Some(tok)
