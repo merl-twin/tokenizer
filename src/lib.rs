@@ -21,6 +21,15 @@ pub enum Number {
     Float(f64),
 }
 
+#[derive(Debug,Clone,PartialEq,PartialOrd)]
+pub enum Numerical {
+    //Date(String),
+    //Ip(String),
+    DotSeparated(String),
+    Measures(String),
+    //Countable(String),
+    Alphanumeric(String),
+}
 
 #[derive(Debug,Clone,Copy,Eq,PartialEq,Ord,PartialOrd)]
 pub enum Separator {
@@ -53,7 +62,8 @@ impl<'t> BasicToken<'t> {
 #[derive(Debug,Clone,PartialEq,PartialOrd)]
 pub enum Token {
     Word(String),
-    Alphanumeric(String),
+    StrangeWord(String),
+    Numerical(Numerical),
     Hashtag(String),
     Mention(String),
     Punctuation(String),
@@ -294,7 +304,7 @@ fn detect_conversion(s: &str) -> Option<WordConvertor> {
     let mut after = WC::default();
     for tok in s.into_tokens_with_options(vec![TokenizerOptions::DetectBBCode,TokenizerOptions::DetectHtml].into_iter().collect()) {
         match &tok.token {
-            Token::Word(s) | Token::Alphanumeric(s) => {
+            Token::Word(s) => {
                 match wconv.word_status(s) {
                     WordStatus::Unknown => { before.unknown += 1; after.unknown += 1; },
                     WordStatus::Both => { before.both += 1; after.both += 1; },
@@ -398,20 +408,67 @@ impl<'t> Tokens<'t> {
         tok
     }
     fn basic_alphanumeric_to_pt(&mut self, s: &str) -> PositionalToken {
-        let mut wrd = true;
+        /*
+        Word
+        StrangeWord
+        pub enum Numerical {
+            Date(String),
+            Ip(String),
+            DotSeparated(String),
+            Countable(String),
+            Measures(String),
+            Alphanumeric(String),
+        }*/
+        //let mut wrd = true;
+        let mut digits = false;
+        let mut digits_begin_only = false;
+        let mut dots = false;
+        let mut alphas_and_apos = false;
+        let mut other = false;
+
+        let mut start_digit = true;
         for c in s.chars() {
-            if c.is_digit(10) || (c == '_') { wrd = false; break; }
+            if start_digit && (!c.is_digit(10)) { start_digit = false; }
+            match c {
+                c @ _ if c.is_digit(10) => {
+                    digits = true;
+                    if start_digit { digits_begin_only = true; }
+                    else { digits_begin_only = false; }
+                },
+                c @ _ if c.is_alphabetic() => { alphas_and_apos = true; },
+                '\'' => { alphas_and_apos = true; },
+                '.' => { dots = true; },
+                _ => { other = true; },
+            }
         }
-        let w = match &self.wconv {
-            None => s.to_string(),
-            Some(wconv) => wconv.convert(s),
-        };
         let tok = PositionalToken {
             offset: self.offset,
             length: s.len(),
-            token: match wrd {
-                true => Token::Word(w),
-                false => Token::Alphanumeric(w),
+            token: match (digits,digits_begin_only,dots,alphas_and_apos,other) {
+                (true,false,true,false,false) => {
+                    // TODO: Date, Ip, DotSeparated
+                    Token::Numerical(Numerical::DotSeparated(s.to_string()))
+                },
+                (true,true,_,true,false) => {
+                    // TODO: Countable or Measures
+                    Token::Numerical(Numerical::Measures(s.to_string()))
+                },
+                (true, _, _, _, _) => {
+                    // Numerical trash, ids, etc.
+                    Token::Numerical(Numerical::Alphanumeric(s.to_string()))
+                }
+                (false,false,_,true,false) => {
+                    // Word
+                    Token::Word(match &self.wconv {
+                        None => s.to_string(),
+                        Some(wconv) => wconv.convert(s),
+                    })
+                },
+                (false,false,_,_,_) => {
+                    // Strange
+                    Token::StrangeWord(s.to_string())
+                },
+                (false,true,_,_,_) => unreachable!(),
             },
         };
         self.offset += s.len();
@@ -540,7 +597,7 @@ impl<'t> Tokens<'t> {
                     self.buffer.pop_front(); self.offset += 1;
                     // vk bbcode check
                     if (text_vec.len()==1)&&(match text_vec[0] {
-                        Token::Alphanumeric(..) => true,
+                        Token::Numerical(Numerical::Alphanumeric(..)) => true,
                         _ => false,
                     }) {
                         std::mem::swap(&mut text_vec,&mut data_vec);
@@ -729,7 +786,7 @@ mod test {
             PositionalToken { offset: 46, length: 5, token: Token::Word("right".to_string()) },
             PositionalToken { offset: 51, length: 1, token: Token::Punctuation("?".to_string()) },
             PositionalToken { offset: 52, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 53, length: 4, token: Token::Alphanumeric("4pda".to_string()) },
+            PositionalToken { offset: 53, length: 4, token: Token::Numerical(Numerical::Measures("4pda".to_string())) }, // TODO
             PositionalToken { offset: 57, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 58, length: 3, token: Token::Word("etc".to_string()) },
             PositionalToken { offset: 61, length: 1, token: Token::Punctuation(".".to_string()) },
@@ -879,7 +936,7 @@ mod test {
             PositionalToken { offset: 33, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 34, length: 39, token: Token::BBCode {
                 text: vec![ Token::Word("post".to_string()) ],
-                data: vec![ Token::Alphanumeric("100001150683379_1873048549410150".to_string()) ],
+                data: vec![ Token::Numerical(Numerical::Alphanumeric("100001150683379_1873048549410150".to_string())) ],
             } },
             PositionalToken { offset: 73, length: 1, token: Token::Punctuation(".".to_string()) },
             PositionalToken { offset: 74, length: 1, token: Token::Separator(Separator::Space) },
@@ -1344,7 +1401,7 @@ mod test {
                     Token::Word("для".to_string()),
                     Token::Separator(Separator::Space),
                     Token::Word("девушек".to_string())],
-                data: vec![Token::Alphanumeric("club113623432".to_string())] } },
+                data: vec![Token::Numerical(Numerical::Alphanumeric("club113623432".to_string()))] } },
             PositionalToken { offset: 52, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 53, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 54, length: 58, token: Token::BBCode {
@@ -1358,7 +1415,7 @@ mod test {
                     Token::Word("для".to_string()),
                     Token::Separator(Separator::Space),
                     Token::Word("сохраненок".to_string())],
-                data: vec![Token::Alphanumeric("club113623432".to_string())] } },
+                data: vec![Token::Numerical(Numerical::Alphanumeric("club113623432".to_string()))] } },
             ];
         let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
