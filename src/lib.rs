@@ -74,6 +74,7 @@ pub struct PositionalToken {
 
 #[derive(Debug,Copy,Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub enum TokenizerOptions {
+    DetectHtml,
     DetectBBCode,
     RusLatConversion,
 }
@@ -103,7 +104,7 @@ struct WordConvertor {
 impl WordConvertor {
     fn new() -> WordConvertor {
         let similar: Vec<(char,char)>  /* rus,lat */ = vec![
-            ('а','a'),('е','e'),('к','k'),('о','o'),('р','p'),('с','c'),('у','y'),('х','x'),
+            ('а','a'),('е','e'),('к','k'),('о','o'),('р','p'),('с','c'),('у','y'),('х','x'),('и','u'),('п','n'),//('т','m'),('м','m'),('н','h'),('т','t'), r -> г р
             ('А','A'),('В','B'),('Е','E'),('К','K'),('М','M'),('Н','H'),('О','O'),('Р','P'),('С','C'),('Т','T'),('У','Y'),('Х','X'),
             ];
         WordConvertor {
@@ -263,6 +264,21 @@ fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
     res
 }
 
+fn detect_html(s: &str) -> VecDeque<(usize,usize)> {
+    lazy_static! {
+        static ref RE: Regex = Regex::new(r"</?\w+?.*?>").unwrap();
+    }
+    let mut res = VecDeque::new(); 
+    for cap in RE.captures_iter(s) {
+        //println!("{:?} {:?}",cap,cap.get(0).map(|m0| (m0.start(),m0.end()-m0.start())));
+        match cap.get(0) {
+            Some(m0) => res.push_back((m0.start(),m0.end()-m0.start())),
+            _ => continue,
+        }
+    }
+    res
+}
+
 #[derive(Debug,Default)]
 struct WC {
     cyrillic: usize,
@@ -275,7 +291,7 @@ fn detect_conversion(s: &str) -> Option<WordConvertor> {
     let mut wconv = WordConvertor::new();
     let mut before = WC::default();
     let mut after = WC::default();
-    for tok in s.into_tokens_with_options(vec![TokenizerOptions::DetectBBCode].into_iter().collect()) {
+    for tok in s.into_tokens_with_options(vec![TokenizerOptions::DetectBBCode,TokenizerOptions::DetectHtml].into_iter().collect()) {
         match &tok.token {
             Token::Word(s) | Token::Alphanumeric(s) => {
                 match wconv.word_status(s) {
@@ -311,6 +327,7 @@ pub struct Tokens<'t> {
     bounds: Breaker<'t>,
     buffer: VecDeque<BasicToken<'t>>,
     bbcodes: VecDeque<(usize,usize,usize)>,
+    html_tags: VecDeque<(usize,usize)>,
     wconv: Option<WordConvertor>,
 }
 impl<'t> Tokens<'t> {
@@ -320,6 +337,7 @@ impl<'t> Tokens<'t> {
             bounds: Breaker::new(s),
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
+            html_tags: if options.contains(&TokenizerOptions::DetectHtml) { detect_html(s) } else { VecDeque::new() },
             wconv: if options.contains(&TokenizerOptions::RusLatConversion) { detect_conversion(s) } else { None },
         }
     }
@@ -532,8 +550,34 @@ impl<'t> Tokens<'t> {
 }
 
 impl<'t> Tokenizer for Tokens<'t> {
-    fn next_token(&mut self) -> Option<PositionalToken> {
+    fn next_token(&mut self) -> Option<PositionalToken> { loop {
         if self.buffer.len()>0 {
+            if (self.html_tags.len()>0)&&(self.html_tags[0].0 == self.offset) {
+                let (get_from,get_len) = self.html_tags[0];
+                let mut cur_off = self.offset;
+                let mut buf_len = 0;
+                for bt in &self.buffer {
+                    if (cur_off>=get_from)&&(cur_off<(get_from+get_len)) {
+                        buf_len += 1; 
+                        cur_off += bt.len();
+                    }
+                }
+                while cur_off<(get_from+get_len) {
+                    match self.bounds.next() {
+                        None => break,
+                        Some(bt) => {
+                            if (cur_off>=get_from)&&(cur_off<(get_from+get_len)) { buf_len += 1; }
+                            cur_off += bt.len();
+                            self.buffer.push_back(bt);
+                        }
+                    }
+                }
+                let mut tail = self.buffer.split_off(buf_len);
+                std::mem::swap(&mut tail,&mut self.buffer);
+                self.html_tags.pop_front();
+                self.offset = cur_off;
+                continue;
+            }
             if (self.bbcodes.len()>0)&&(self.bbcodes[0].0 == self.offset) {
                 let get_len = self.bbcodes[0].1 + self.bbcodes[0].2 + 3;
                 let (text_from,text_len) = (self.bbcodes[0].0+1,self.bbcodes[0].1);
@@ -565,8 +609,7 @@ impl<'t> Tokenizer for Tokens<'t> {
                 self.bbcodes.pop_front();
                 if let Some(t) = self.check_bb_code(buf1_len,buf2_len) { return Some(t); }
             }
-
-            self.next_from_buffer()
+            return self.next_from_buffer();
         } else {
             loop {
                 match self.bounds.next() {
@@ -580,7 +623,7 @@ impl<'t> Tokenizer for Tokens<'t> {
                 }
             }
         }
-    }
+    }}
 }
 
 impl<'t> Iterator for Tokens<'t> {
@@ -599,7 +642,7 @@ pub trait IntoTokenizer {
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
     fn into_tokens(self) -> Self::IntoTokens {
-        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::RusLatConversion].into_iter().collect())
+        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::RusLatConversion,TokenizerOptions::DetectHtml].into_iter().collect())
     }
     fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens {
         Tokens::new(self,options)
@@ -1062,6 +1105,210 @@ mod test {
     
  
 
+    #[test]
+    fn html() {
+        let uws = "<div class=\"article article_view \" id=\"article_view_-113039156_9551\" data-article-url=\"/@chaibuket-o-chem-ne-zabyt-25-noyabrya\" data-audio-context=\"article:-113039156_9551\"><h1  class=\"article_decoration_first article_decoration_last\" >День Мамы </h1><p  class=\"article_decoration_first article_decoration_last\" >День, когда поздравляют мам, бабушек, сестер и жён — это всемирный праздник, называемый «День Мамы». В настоящее время его отмечают почти в каждой стране, просто везде разные даты и способы празднования. </p><h3  class=\"article_decoration_first article_decoration_last\" ><span class='article_anchor_title'>\n  <span class='article_anchor_button' id='pochemu-my-ego-prazdnuem'></span>\n  <span class='article_anchor_fsymbol'>П</span>\n</span>ПОЧЕМУ МЫ ЕГО ПРАЗДНУЕМ</h3><p  class=\"article_decoration_first article_decoration_last article_decoration_before\" >В 1987 году комитет госдумы по делам женщин, семьи и молодежи выступил с предложением учредить «День мамы», а сам приказ был подписан уже 30 января 1988 года Борисом Ельциным. Было решено, что ежегодно в России празднество дня мамы будет выпадать на последнее воскресенье ноября. </p><figure data-type=\"101\" data-mode=\"\"  class=\"article_decoration_first article_decoration_last\" >\n  <div class=\"article_figure_content\" style=\"width: 1125px\">\n    <div class=\"article_figure_sizer_content\"><div class=\"article_object_sizer_wrap\" data-sizes=\"[{&quot;s&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c0ffd/pcNJaBH3NDo.jpg&quot;,75,50],&quot;m&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c0ffe/ozCLs2kHtRY.jpg&quot;,130,87],&quot;x&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c0fff/E4KtTNDydzE.jpg&quot;,604,403],&quot;y&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1000/1nLxpYKavzU.jpg&quot;,807,538],&quot;z&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1001/IgEODe90yEk.jpg&quot;,1125,750],&quot;o&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1002/01faNwVZ2_E.jpg&quot;,130,87],&quot;p&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1003/baDFzbdRP2s.jpg&quot;,200,133],&quot;q&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1004/CY4khI6KJKA.jpg&quot;,320,213],&quot;r&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1005/NOvAJ6-VltY.jpg&quot;,510,340]}]\">\n  <img class=\"article_object_sizer_inner article_object_photo__image_blur\" src=\"https://pp.userapi.com/c849128/v849128704/c0ffd/pcNJaBH3NDo.jpg\" data-baseurl=\"\"/>\n  \n</div></div>\n    <div class=\"article_figure_sizer\" style=\"padding-bottom: 66.666666666667%\"></div>";
+        let result = vec![
+            PositionalToken { offset: 236, length: 8, token: Token::Word("День".to_string()) },
+            PositionalToken { offset: 244, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 245, length: 8, token: Token::Word("Мамы".to_string()) },
+            PositionalToken { offset: 253, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 321, length: 8, token: Token::Word("День".to_string()) },
+            PositionalToken { offset: 329, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 330, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 331, length: 10, token: Token::Word("когда".to_string()) },
+            PositionalToken { offset: 341, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 342, length: 22, token: Token::Word("поздравляют".to_string()) },
+            PositionalToken { offset: 364, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 365, length: 6, token: Token::Word("мам".to_string()) },
+            PositionalToken { offset: 371, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 372, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 373, length: 14, token: Token::Word("бабушек".to_string()) },
+            PositionalToken { offset: 387, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 388, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 389, length: 12, token: Token::Word("сестер".to_string()) },
+            PositionalToken { offset: 401, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 402, length: 2, token: Token::Word("и".to_string()) },
+            PositionalToken { offset: 404, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 405, length: 6, token: Token::Word("жён".to_string()) },
+            PositionalToken { offset: 411, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 412, length: 3, token: Token::Unicode("u2014".to_string()) },
+            PositionalToken { offset: 415, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 416, length: 6, token: Token::Word("это".to_string()) },
+            PositionalToken { offset: 422, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 423, length: 18, token: Token::Word("всемирный".to_string()) },
+            PositionalToken { offset: 441, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 442, length: 16, token: Token::Word("праздник".to_string()) },
+            PositionalToken { offset: 458, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 459, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 460, length: 20, token: Token::Word("называемый".to_string()) },
+            PositionalToken { offset: 480, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 481, length: 2, token: Token::Unicode("uab".to_string()) },
+            PositionalToken { offset: 483, length: 8, token: Token::Word("День".to_string()) },
+            PositionalToken { offset: 491, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 492, length: 8, token: Token::Word("Мамы".to_string()) },
+            PositionalToken { offset: 500, length: 2, token: Token::Unicode("ubb".to_string()) },
+            PositionalToken { offset: 502, length: 1, token: Token::Punctuation(".".to_string()) },
+            PositionalToken { offset: 503, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 504, length: 2, token: Token::Word("В".to_string()) },
+            PositionalToken { offset: 506, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 507, length: 18, token: Token::Word("настоящее".to_string()) },
+            PositionalToken { offset: 525, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 526, length: 10, token: Token::Word("время".to_string()) },
+            PositionalToken { offset: 536, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 537, length: 6, token: Token::Word("его".to_string()) },
+            PositionalToken { offset: 543, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 544, length: 16, token: Token::Word("отмечают".to_string()) },
+            PositionalToken { offset: 560, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 561, length: 10, token: Token::Word("почти".to_string()) },
+            PositionalToken { offset: 571, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 572, length: 2, token: Token::Word("в".to_string()) },
+            PositionalToken { offset: 574, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 575, length: 12, token: Token::Word("каждой".to_string()) },
+            PositionalToken { offset: 587, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 588, length: 12, token: Token::Word("стране".to_string()) },
+            PositionalToken { offset: 600, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 601, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 602, length: 12, token: Token::Word("просто".to_string()) },
+            PositionalToken { offset: 614, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 615, length: 10, token: Token::Word("везде".to_string()) },
+            PositionalToken { offset: 625, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 626, length: 12, token: Token::Word("разные".to_string()) },
+            PositionalToken { offset: 638, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 639, length: 8, token: Token::Word("даты".to_string()) },
+            PositionalToken { offset: 647, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 648, length: 2, token: Token::Word("и".to_string()) },
+            PositionalToken { offset: 650, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 651, length: 14, token: Token::Word("способы".to_string()) },
+            PositionalToken { offset: 665, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 666, length: 24, token: Token::Word("празднования".to_string()) },
+            PositionalToken { offset: 690, length: 1, token: Token::Punctuation(".".to_string()) },
+            PositionalToken { offset: 691, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 794, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 795, length: 2, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 870, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 871, length: 2, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 910, length: 2, token: Token::Word("П".to_string()) },
+            PositionalToken { offset: 919, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 927, length: 12, token: Token::Word("ПОЧЕМУ".to_string()) },
+            PositionalToken { offset: 939, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 940, length: 4, token: Token::Word("МЫ".to_string()) },
+            PositionalToken { offset: 944, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 945, length: 6, token: Token::Word("ЕГО".to_string()) },
+            PositionalToken { offset: 951, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 952, length: 18, token: Token::Word("ПРАЗДНУЕМ".to_string()) },
+            PositionalToken { offset: 1063, length: 2, token: Token::Word("В".to_string()) },
+            PositionalToken { offset: 1065, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1066, length: 4, token: Token::Number(Number::Integer(1987)) },
+            PositionalToken { offset: 1070, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1071, length: 8, token: Token::Word("году".to_string()) },
+            PositionalToken { offset: 1079, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1080, length: 14, token: Token::Word("комитет".to_string()) },
+            PositionalToken { offset: 1094, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1095, length: 14, token: Token::Word("госдумы".to_string()) },
+            PositionalToken { offset: 1109, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1110, length: 4, token: Token::Word("по".to_string()) },
+            PositionalToken { offset: 1114, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1115, length: 10, token: Token::Word("делам".to_string()) },
+            PositionalToken { offset: 1125, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1126, length: 12, token: Token::Word("женщин".to_string()) },
+            PositionalToken { offset: 1138, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 1139, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1140, length: 10, token: Token::Word("семьи".to_string()) },
+            PositionalToken { offset: 1150, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1151, length: 2, token: Token::Word("и".to_string()) },
+            PositionalToken { offset: 1153, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1154, length: 16, token: Token::Word("молодежи".to_string()) },
+            PositionalToken { offset: 1170, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1171, length: 16, token: Token::Word("выступил".to_string()) },
+            PositionalToken { offset: 1187, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1188, length: 2, token: Token::Word("с".to_string()) },
+            PositionalToken { offset: 1190, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1191, length: 24, token: Token::Word("предложением".to_string()) },
+            PositionalToken { offset: 1215, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1216, length: 16, token: Token::Word("учредить".to_string()) },
+            PositionalToken { offset: 1232, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1233, length: 2, token: Token::Unicode("uab".to_string()) },
+            PositionalToken { offset: 1235, length: 8, token: Token::Word("День".to_string()) },
+            PositionalToken { offset: 1243, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1244, length: 8, token: Token::Word("мамы".to_string()) },
+            PositionalToken { offset: 1252, length: 2, token: Token::Unicode("ubb".to_string()) },
+            PositionalToken { offset: 1254, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 1255, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1256, length: 2, token: Token::Word("а".to_string()) },
+            PositionalToken { offset: 1258, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1259, length: 6, token: Token::Word("сам".to_string()) },
+            PositionalToken { offset: 1265, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1266, length: 12, token: Token::Word("приказ".to_string()) },
+            PositionalToken { offset: 1278, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1279, length: 6, token: Token::Word("был".to_string()) },
+            PositionalToken { offset: 1285, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1286, length: 16, token: Token::Word("подписан".to_string()) },
+            PositionalToken { offset: 1302, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1303, length: 6, token: Token::Word("уже".to_string()) },
+            PositionalToken { offset: 1309, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1310, length: 2, token: Token::Number(Number::Integer(30)) },
+            PositionalToken { offset: 1312, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1313, length: 12, token: Token::Word("января".to_string()) },
+            PositionalToken { offset: 1325, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1326, length: 4, token: Token::Number(Number::Integer(1988)) },
+            PositionalToken { offset: 1330, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1331, length: 8, token: Token::Word("года".to_string()) },
+            PositionalToken { offset: 1339, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1340, length: 14, token: Token::Word("Борисом".to_string()) },
+            PositionalToken { offset: 1354, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1355, length: 16, token: Token::Word("Ельциным".to_string()) },
+            PositionalToken { offset: 1371, length: 1, token: Token::Punctuation(".".to_string()) },
+            PositionalToken { offset: 1372, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1373, length: 8, token: Token::Word("Было".to_string()) },
+            PositionalToken { offset: 1381, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1382, length: 12, token: Token::Word("решено".to_string()) },
+            PositionalToken { offset: 1394, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 1395, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1396, length: 6, token: Token::Word("что".to_string()) },
+            PositionalToken { offset: 1402, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1403, length: 16, token: Token::Word("ежегодно".to_string()) },
+            PositionalToken { offset: 1419, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1420, length: 2, token: Token::Word("в".to_string()) },
+            PositionalToken { offset: 1422, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1423, length: 12, token: Token::Word("России".to_string()) },
+            PositionalToken { offset: 1435, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1436, length: 22, token: Token::Word("празднество".to_string()) },
+            PositionalToken { offset: 1458, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1459, length: 6, token: Token::Word("дня".to_string()) },
+            PositionalToken { offset: 1465, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1466, length: 8, token: Token::Word("мамы".to_string()) },
+            PositionalToken { offset: 1474, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1475, length: 10, token: Token::Word("будет".to_string()) },
+            PositionalToken { offset: 1485, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1486, length: 16, token: Token::Word("выпадать".to_string()) },
+            PositionalToken { offset: 1502, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1503, length: 4, token: Token::Word("на".to_string()) },
+            PositionalToken { offset: 1507, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1508, length: 18, token: Token::Word("последнее".to_string()) },
+            PositionalToken { offset: 1526, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1527, length: 22, token: Token::Word("воскресенье".to_string()) },
+            PositionalToken { offset: 1549, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1550, length: 12, token: Token::Word("ноября".to_string()) },
+            PositionalToken { offset: 1562, length: 1, token: Token::Punctuation(".".to_string()) },
+            PositionalToken { offset: 1563, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1664, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 1665, length: 2, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 1725, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 1726, length: 4, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 2725, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 2726, length: 2, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 2888, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 2889, length: 2, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 2891, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 2904, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 2905, length: 4, token: Token::Separator(Separator::Space) },
+            ];
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+        //print_result(&lib_res); panic!("")
+    }
+
     /*#[test]
     fn new_test() {
         let uws = "";
@@ -1069,6 +1316,6 @@ mod test {
         let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         print_result(&lib_res); panic!("")
-    }*/
+}*/
 }
  
