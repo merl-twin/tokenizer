@@ -252,10 +252,11 @@ pub trait Tokenizer {
 
 fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"\[(.*?)\|(\S*?)\]").unwrap();
+        static ref RE: Regex = Regex::new(r"\[(.*?)\|(.*?)\]").unwrap();
     }
     let mut res = VecDeque::new(); 
     for cap in RE.captures_iter(s) {
+        //println!("{:?} {:?}",cap,cap.get(0).map(|m0| (m0.start(),m0.end()-m0.start())));
         match (cap.get(0),cap.get(1),cap.get(2)) {
             (Some(m0),Some(m1),Some(m2)) => res.push_back((m0.start(),m1.end()-m1.start(),m2.end()-m2.start())),
             _ => continue,
@@ -435,7 +436,19 @@ impl<'t> Tokens<'t> {
         } else { false };
         if check {
             let mut url = "".to_string();
+            let tag_bound = {
+                let bb_bound = if self.bbcodes.len()>0 { Some(self.bbcodes[0].0) } else { None };
+                let html_bound = if self.html_tags.len()>0 { Some(self.html_tags[0].0) } else { None };
+                match (bb_bound,html_bound) {
+                    (Some(bb),Some(ht)) => Some(if ht>bb { bb } else { ht }),
+                    (Some(b),None) | (None,Some(b)) => Some(b),
+                    (None,None) => None,
+                }
+            };
             loop {
+                if let Some(b) = tag_bound {
+                    if (self.offset + url.len()) >= b { break; }
+                }
                 match self.buffer.pop_front() {
                     None => break,
                     Some(BasicToken::Separator(s)) => {
@@ -525,6 +538,13 @@ impl<'t> Tokens<'t> {
                     }
                     std::mem::swap(&mut tail,&mut self.buffer);
                     self.buffer.pop_front(); self.offset += 1;
+                    // vk bbcode check
+                    if (text_vec.len()==1)&&(match text_vec[0] {
+                        Token::Alphanumeric(..) => true,
+                        _ => false,
+                    }) {
+                        std::mem::swap(&mut text_vec,&mut data_vec);
+                    }
                     Some(PositionalToken {
                         offset: offset,
                         length: self.offset - offset,
@@ -1309,6 +1329,54 @@ mod test {
         //print_result(&lib_res); panic!("")
     }
 
+    #[test]
+    fn vk_bbcode() {
+        let uws = "[club113623432|💜💜💜 - для девушек] \n[club113623432|💛💛💛 - для сохраненок]";
+        let result = vec![
+            PositionalToken { offset: 0, length: 52, token: Token::BBCode {
+                text: vec![
+                    Token::Emoji("purple_heart".to_string()),
+                    Token::Emoji("purple_heart".to_string()),
+                    Token::Emoji("purple_heart".to_string()),
+                    Token::Separator(Separator::Space),
+                    Token::Punctuation("-".to_string()),
+                    Token::Separator(Separator::Space),
+                    Token::Word("для".to_string()),
+                    Token::Separator(Separator::Space),
+                    Token::Word("девушек".to_string())],
+                data: vec![Token::Alphanumeric("club113623432".to_string())] } },
+            PositionalToken { offset: 52, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 53, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 54, length: 58, token: Token::BBCode {
+                text: vec![
+                    Token::Emoji("yellow_heart".to_string()),
+                    Token::Emoji("yellow_heart".to_string()),
+                    Token::Emoji("yellow_heart".to_string()),
+                    Token::Separator(Separator::Space),
+                    Token::Punctuation("-".to_string()),
+                    Token::Separator(Separator::Space),
+                    Token::Word("для".to_string()),
+                    Token::Separator(Separator::Space),
+                    Token::Word("сохраненок".to_string())],
+                data: vec![Token::Alphanumeric("club113623432".to_string())] } },
+            ];
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+        //print_result(&lib_res); panic!("")
+    }
+
+    #[test]
+    fn text_href_and_html () {
+        let uws = "https://youtu.be/dQErLQZw3qA</a></p><figure data-type=\"102\" data-mode=\"\"  class=\"article_decoration_first article_decoration_last\" >\n";
+        let result =  vec![
+            PositionalToken { offset: 0, length: 28, token: Token::Url("https://youtu.be/dQErLQZw3qA".to_string()) },
+            PositionalToken { offset: 132, length: 1, token: Token::Separator(Separator::Newline) },
+            ];
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+        //print_result(&lib_res); panic!("")
+    }
+    
     /*#[test]
     fn new_test() {
         let uws = "";
