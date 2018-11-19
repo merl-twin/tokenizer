@@ -7,7 +7,7 @@ use regex::Regex;
 
 use unicode_segmentation::{UnicodeSegmentation,UWordBounds};
 use std::str::FromStr;
-use std::collections::{VecDeque,BTreeSet};
+use std::collections::{VecDeque,BTreeSet,BTreeMap};
 
 mod emoji;
 
@@ -78,8 +78,112 @@ pub enum TokenizerOptions {
     RusLatConversion,
 }
 
+enum ConvertBothPolicy {
+    Immutable,
+    ToCyrillic,
+    ToLatin,
+}
+enum WordStatus {
+    Cyrillic,
+    Latin,
+    Both,
+    MixedLatinable,
+    MixedCyrillicable,
+    Mixed,
+    Unknown,
+}
 struct WordConvertor {
+    cyrillic: BTreeSet<char>,
+    latin: BTreeSet<char>,
+    cyr2lat: BTreeMap<char,char>,
+    lat2cyr: BTreeMap<char,char>,
 
+    policy: ConvertBothPolicy,
+}
+impl WordConvertor {
+    fn new() -> WordConvertor {
+        let similar: Vec<(char,char)>  /* rus,lat */ = vec![
+            ('а','a'),('е','e'),('к','k'),('о','o'),('р','p'),('с','c'),('у','y'),('х','x'),
+            ('А','A'),('В','B'),('Е','E'),('К','K'),('М','M'),('Н','H'),('О','O'),('Р','P'),('С','C'),('Т','T'),('У','Y'),('Х','X'),
+            ];
+        WordConvertor {
+            cyrillic: "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ".chars().collect(),
+            latin: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().collect(),
+            cyr2lat: similar.iter().cloned().collect(),
+            lat2cyr: similar.iter().cloned().map(|(c,l)| (l,c)).collect(),
+            policy: ConvertBothPolicy::Immutable,
+        }
+    }
+    fn set_policy(&mut self, policy: ConvertBothPolicy) {
+        self.policy = policy;
+    }
+    fn word_status(&self,s: &str) -> WordStatus {
+        let mut cyr = 0;
+        let mut lat = 0;
+        let mut sim_cyr = 0;
+        let mut sim_lat = 0;
+        for c in s.chars() {
+            if self.cyrillic.contains(&c) {
+                match self.cyr2lat.contains_key(&c) {
+                    true => sim_cyr += 1,
+                    false => cyr += 1,
+                }
+            }
+            if self.latin.contains(&c) {
+                match self.lat2cyr.contains_key(&c) {
+                    true => sim_lat += 1,
+                    false => lat += 1,
+                }
+            }
+        }
+        match (cyr,lat) {
+            (0,0) => match sim_cyr+sim_lat {
+                0 => { WordStatus::Unknown },
+                _ => { WordStatus::Both },
+            },
+            (0,_) => match sim_cyr {
+                0 => { WordStatus::Latin },
+                _ => { WordStatus::MixedLatinable },
+            },
+            (_,0) => match sim_lat {
+                0 => { WordStatus::Cyrillic },
+                _ => { WordStatus::MixedCyrillicable },
+            },
+            (_,_) => { WordStatus::Mixed },
+        }
+    }
+    fn to_cyrillic(&self, s: &str) -> String {
+        let mut res = String::with_capacity(s.len());
+        for c in s.chars() {
+            match self.lat2cyr.get(&c) {
+                None => res.push(c),
+                Some(c) => res.push(*c),
+            }
+        }
+        res
+    }
+    fn to_latin(&self, s: &str) -> String {
+        let mut res = String::with_capacity(s.len());
+        for c in s.chars() {
+            match self.cyr2lat.get(&c) {
+                None => res.push(c),
+                Some(c) => res.push(*c),
+            }
+        }
+        res
+    }
+    fn convert(&self,s: &str) -> String {
+        let status = self.word_status(s);
+        match (status,&self.policy) {
+            (WordStatus::Cyrillic,_) => s.to_string(),
+            (WordStatus::Latin,_) => s.to_string(),       
+            (WordStatus::MixedLatinable,_) => self.to_latin(s),
+            (WordStatus::MixedCyrillicable,_) => self.to_cyrillic(s),
+            (_,ConvertBothPolicy::Immutable) => s.to_string(),
+            (_,ConvertBothPolicy::ToCyrillic) => self.to_cyrillic(s),
+            (_,ConvertBothPolicy::ToLatin) => self.to_latin(s),
+        }
+    }
 }
 
 struct Breaker<'t> {
@@ -159,8 +263,47 @@ fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
     res
 }
 
+#[derive(Debug,Default)]
+struct WC {
+    cyrillic: usize,
+    latin: usize,
+    both: usize,
+    mixed: usize,
+    unknown: usize,
+}
 fn detect_conversion(s: &str) -> Option<WordConvertor> {
-    None
+    let mut wconv = WordConvertor::new();
+    let mut before = WC::default();
+    let mut after = WC::default();
+    for tok in s.into_tokens_with_options(vec![TokenizerOptions::DetectBBCode].into_iter().collect()) {
+        match &tok.token {
+            Token::Word(s) | Token::Alphanumeric(s) => {
+                match wconv.word_status(s) {
+                    WordStatus::Unknown => { before.unknown += 1; after.unknown += 1; },
+                    WordStatus::Both => { before.both += 1; after.both += 1; },
+                    WordStatus::Latin => { before.latin += 1; after.latin +=1; },
+                    WordStatus::MixedLatinable => { before.mixed += 1; after.latin +=1; },
+                    WordStatus::Cyrillic => { before.cyrillic += 1; after.cyrillic +=1; },
+                    WordStatus::MixedCyrillicable => { before.mixed += 1; after.cyrillic +=1; },
+                    WordStatus::Mixed => { before.mixed += 1; after.mixed +=1; },
+                }
+            },
+            _ => continue,
+        }
+    }
+    //println!("{:?}",before);
+    //println!("{:?}",after);
+    if (before.mixed>0)&&((f64::from(after.mixed as u32)/f64::from(before.mixed as u32))<0.5) {
+        if (after.cyrillic>0)&&((f64::from(after.latin as u32)/f64::from(after.cyrillic as u32))<0.1) {
+            wconv.set_policy(ConvertBothPolicy::ToCyrillic);
+        }
+        if (after.latin>0)&&((f64::from(after.cyrillic as u32)/f64::from(after.latin as u32))<0.1) {
+            wconv.set_policy(ConvertBothPolicy::ToLatin);
+        }
+        Some(wconv)
+    } else {
+        None
+    }
 }
 
 pub struct Tokens<'t> {
@@ -240,12 +383,16 @@ impl<'t> Tokens<'t> {
         for c in s.chars() {
             if c.is_digit(10) || (c == '_') { wrd = false; break; }
         }
+        let w = match &self.wconv {
+            None => s.to_string(),
+            Some(wconv) => wconv.convert(s),
+        };
         let tok = PositionalToken {
             offset: self.offset,
             length: s.len(),
             token: match wrd {
-                true => Token::Word(s.to_string()),
-                false => Token::Alphanumeric(s.to_string()),
+                true => Token::Word(w),
+                false => Token::Alphanumeric(w),
             },
         };
         self.offset += s.len();
@@ -447,11 +594,15 @@ impl<'t> Iterator for Tokens<'t> {
 pub trait IntoTokenizer {
     type IntoTokens: Tokenizer;
     fn into_tokens(self) -> Self::IntoTokens;
+    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens;
 }
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
     fn into_tokens(self) -> Self::IntoTokens {
         Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::RusLatConversion].into_iter().collect())
+    }
+    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens {
+        Tokens::new(self,options)
     }
 }
 
@@ -479,12 +630,11 @@ mod test {
         if result.len()!=lib_res.len() { assert_eq!(result,lib_res); }
         for i in 0 .. result.len() {
             assert_eq!(result[i],lib_res[i]);
-            let tok = &lib_res[i];
+            /*let tok = &lib_res[i];
             match &tok.token {
-                Token::Word(s) |
                 Token::Punctuation(s) => assert_eq!(s,&uws[tok.offset .. tok.offset+tok.length]),
                 _ => {},
-            }
+            }*/
         }
     }
     
@@ -516,7 +666,7 @@ mod test {
             PositionalToken { offset: 46, length: 5, token: Token::Word("right".to_string()) },
             PositionalToken { offset: 51, length: 1, token: Token::Punctuation("?".to_string()) },
             PositionalToken { offset: 52, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 53, length: 4, token: Token::Word("4pda".to_string()) },
+            PositionalToken { offset: 53, length: 4, token: Token::Alphanumeric("4pda".to_string()) },
             PositionalToken { offset: 57, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 58, length: 3, token: Token::Word("etc".to_string()) },
             PositionalToken { offset: 61, length: 1, token: Token::Punctuation(".".to_string()) },
@@ -666,7 +816,7 @@ mod test {
             PositionalToken { offset: 33, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 34, length: 39, token: Token::BBCode {
                 text: vec![ Token::Word("post".to_string()) ],
-                data: vec![ Token::Word("100001150683379_1873048549410150".to_string()) ],
+                data: vec![ Token::Alphanumeric("100001150683379_1873048549410150".to_string()) ],
             } },
             PositionalToken { offset: 73, length: 1, token: Token::Punctuation(".".to_string()) },
             PositionalToken { offset: 74, length: 1, token: Token::Separator(Separator::Space) },
@@ -810,7 +960,107 @@ mod test {
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
-     
+
+    #[test]
+    fn ruslat() {
+        let uws = "Именнo этoт мужчинa пришёл в вашу жизнь неспрoста\n\nЕсли вы пoнимаете назначение челoвека в жизни, вам станет легче научиться испытывать к нему любoвь, пoтoму чтo будет пoнимание, чтo челoвек в мoей жизни - учитель, и я ему за этo благoдарна.\nПоказать полностью…";
+        let result = vec![
+            PositionalToken { offset: 0, length: 11, token: Token::Word("Именно".to_string()) },
+            PositionalToken { offset: 11, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 12, length: 7, token: Token::Word("этот".to_string()) },
+            PositionalToken { offset: 19, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 20, length: 13, token: Token::Word("мужчина".to_string()) },
+            PositionalToken { offset: 33, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 34, length: 12, token: Token::Word("пришёл".to_string()) },
+            PositionalToken { offset: 46, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 47, length: 2, token: Token::Word("в".to_string()) },
+            PositionalToken { offset: 49, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 50, length: 8, token: Token::Word("вашу".to_string()) },
+            PositionalToken { offset: 58, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 59, length: 10, token: Token::Word("жизнь".to_string()) },
+            PositionalToken { offset: 69, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 70, length: 17, token: Token::Word("неспроста".to_string()) },
+            PositionalToken { offset: 87, length: 2, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 89, length: 8, token: Token::Word("Если".to_string()) },
+            PositionalToken { offset: 97, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 98, length: 4, token: Token::Word("вы".to_string()) },
+            PositionalToken { offset: 102, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 103, length: 17, token: Token::Word("понимаете".to_string()) },
+            PositionalToken { offset: 120, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 121, length: 20, token: Token::Word("назначение".to_string()) },
+            PositionalToken { offset: 141, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 142, length: 15, token: Token::Word("человека".to_string()) },
+            PositionalToken { offset: 157, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 158, length: 2, token: Token::Word("в".to_string()) },
+            PositionalToken { offset: 160, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 161, length: 10, token: Token::Word("жизни".to_string()) },
+            PositionalToken { offset: 171, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 172, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 173, length: 6, token: Token::Word("вам".to_string()) },
+            PositionalToken { offset: 179, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 180, length: 12, token: Token::Word("станет".to_string()) },
+            PositionalToken { offset: 192, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 193, length: 10, token: Token::Word("легче".to_string()) },
+            PositionalToken { offset: 203, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 204, length: 18, token: Token::Word("научиться".to_string()) },
+            PositionalToken { offset: 222, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 223, length: 20, token: Token::Word("испытывать".to_string()) },
+            PositionalToken { offset: 243, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 244, length: 2, token: Token::Word("к".to_string()) },
+            PositionalToken { offset: 246, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 247, length: 8, token: Token::Word("нему".to_string()) },
+            PositionalToken { offset: 255, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 256, length: 11, token: Token::Word("любовь".to_string()) },
+            PositionalToken { offset: 267, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 268, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 269, length: 10, token: Token::Word("потому".to_string()) },
+            PositionalToken { offset: 279, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 280, length: 5, token: Token::Word("что".to_string()) },
+            PositionalToken { offset: 285, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 286, length: 10, token: Token::Word("будет".to_string()) },
+            PositionalToken { offset: 296, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 297, length: 17, token: Token::Word("понимание".to_string()) },
+            PositionalToken { offset: 314, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 315, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 316, length: 5, token: Token::Word("что".to_string()) },
+            PositionalToken { offset: 321, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 322, length: 13, token: Token::Word("человек".to_string()) },
+            PositionalToken { offset: 335, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 336, length: 2, token: Token::Word("в".to_string()) },
+            PositionalToken { offset: 338, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 339, length: 7, token: Token::Word("моей".to_string()) },
+            PositionalToken { offset: 346, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 347, length: 10, token: Token::Word("жизни".to_string()) },
+            PositionalToken { offset: 357, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 358, length: 1, token: Token::Punctuation("-".to_string()) },
+            PositionalToken { offset: 359, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 360, length: 14, token: Token::Word("учитель".to_string()) },
+            PositionalToken { offset: 374, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 375, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 376, length: 2, token: Token::Word("и".to_string()) },
+            PositionalToken { offset: 378, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 379, length: 2, token: Token::Word("я".to_string()) },
+            PositionalToken { offset: 381, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 382, length: 6, token: Token::Word("ему".to_string()) },
+            PositionalToken { offset: 388, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 389, length: 4, token: Token::Word("за".to_string()) },
+            PositionalToken { offset: 393, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 394, length: 5, token: Token::Word("это".to_string()) },
+            PositionalToken { offset: 399, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 400, length: 19, token: Token::Word("благодарна".to_string()) },
+            PositionalToken { offset: 419, length: 1, token: Token::Punctuation(".".to_string()) },
+            PositionalToken { offset: 420, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 421, length: 16, token: Token::Word("Показать".to_string()) },
+            PositionalToken { offset: 437, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 438, length: 18, token: Token::Word("полностью".to_string()) },
+            PositionalToken { offset: 456, length: 3, token: Token::Unicode("u2026".to_string()) },
+            ];
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+        //print_result(&lib_res); panic!("")
+    }
+    
+ 
 
     /*#[test]
     fn new_test() {
