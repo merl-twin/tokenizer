@@ -238,10 +238,13 @@ impl<'t> Iterator for Breaker<'t> {
                 }
                 let mut an = true;
                 let mut num = true;
+                let mut dot_count = 0;
                 for c in w.chars() {
                     an = an && (c.is_alphanumeric() || (c == '.') || (c == '\'') || (c == '-') || (c == '+') || (c == '_'));
                     num = num && (c.is_digit(10) || (c == '.') || (c == '-') || (c == '+'));
+                    if c == '.' { dot_count += 1; }
                 }
+                if dot_count>1 { num = false; }
                 self.offset += w.len();
                 if num {
                     return Some(BasicToken::Number(w));
@@ -737,6 +740,7 @@ mod test {
         r = r.replace("\")","\".to_string())");
         r = r.replace("Separator(","Separator(Separator::");
         r = r.replace("Number(","Number(Number::");
+        r = r.replace("Numerical(","Numerical(Numerical::");
         println!("{}",r);
     }
 
@@ -1433,14 +1437,45 @@ mod test {
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
+
+    #[test]
+    fn new_test() {
+        let uws = "12.02.18 31.28.34 23.11.2018 123.568.365.234.578 127.0.0.1 1st 1кг 123123афываыв 12321фвафыов234выалфо 12_123_343.4234_4234";
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        //print_result(&lib_res); panic!("");
+        let result = vec![
+            PositionalToken { offset: 0, length: 8, token: Token::Numerical(Numerical::DotSeparated("12.02.18".to_string())) },
+            PositionalToken { offset: 8, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 9, length: 8, token: Token::Numerical(Numerical::DotSeparated("31.28.34".to_string())) },
+            PositionalToken { offset: 17, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 18, length: 10, token: Token::Numerical(Numerical::DotSeparated("23.11.2018".to_string())) },
+            PositionalToken { offset: 28, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 29, length: 19, token: Token::Numerical(Numerical::DotSeparated("123.568.365.234.578".to_string())) },
+            PositionalToken { offset: 48, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 49, length: 9, token: Token::Numerical(Numerical::DotSeparated("127.0.0.1".to_string())) },
+            PositionalToken { offset: 58, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 59, length: 3, token: Token::Numerical(Numerical::Measures("1st".to_string())) },
+            PositionalToken { offset: 62, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 63, length: 5, token: Token::Numerical(Numerical::Measures("1кг".to_string())) },
+            PositionalToken { offset: 68, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 69, length: 20, token: Token::Numerical(Numerical::Measures("123123афываыв".to_string())) },
+            PositionalToken { offset: 89, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 90, length: 34, token: Token::Numerical(Numerical::Alphanumeric("12321фвафыов234выалфо".to_string())) },
+            PositionalToken { offset: 124, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 125, length: 20, token: Token::Numerical(Numerical::Alphanumeric("12_123_343.4234_4234".to_string())) },
+            ];
+        check_results(&result,&lib_res,uws);
+       
+    }
     
     /*#[test]
     fn new_test() {
         let uws = "";
-        let result = vec![];
         let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        print_result(&lib_res); panic!("");
+        let result = vec![];
         check_results(&result,&lib_res,uws);
-        print_result(&lib_res); panic!("")
+        
 }*/
 }
  
