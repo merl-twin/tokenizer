@@ -278,7 +278,7 @@ fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
     res
 }
 
-fn detect_html(s: &str) -> VecDeque<(usize,usize)> {
+fn detect_html(s: &str) -> usize {
     lazy_static! {
         static ref RE: Regex = Regex::new(r"</?\w+?.*?>").unwrap();
     }
@@ -290,7 +290,7 @@ fn detect_html(s: &str) -> VecDeque<(usize,usize)> {
             _ => continue,
         }
     }
-    res
+    res.len()
 }
 
 #[derive(Debug,Default)]
@@ -305,7 +305,7 @@ fn detect_conversion(s: &str) -> Option<WordConvertor> {
     let mut wconv = WordConvertor::new();
     let mut before = WC::default();
     let mut after = WC::default();
-    for tok in s.into_tokens_with_options(vec![TokenizerOptions::DetectBBCode,TokenizerOptions::DetectHtml].into_iter().collect()) {
+    for tok in s.into_tokens_with_options(vec![TokenizerOptions::DetectBBCode].into_iter().collect()).unwrap() {
         match &tok.token {
             Token::Word(s) => {
                 match wconv.word_status(s) {
@@ -336,24 +336,30 @@ fn detect_conversion(s: &str) -> Option<WordConvertor> {
     }
 }
 
+#[derive(Debug)]
+pub enum Untokenizable {
+    Html,
+}
+
 pub struct Tokens<'t> {
     offset: usize,
     bounds: Breaker<'t>,
     buffer: VecDeque<BasicToken<'t>>,
     bbcodes: VecDeque<(usize,usize,usize)>,
-    html_tags: VecDeque<(usize,usize)>,
     wconv: Option<WordConvertor>,
 }
 impl<'t> Tokens<'t> {
-    fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Tokens<'a> {
-        Tokens {
+    fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Result<Tokens<'a>,Untokenizable> {
+        if options.contains(&TokenizerOptions::DetectHtml)&&(detect_html(s)>5) {
+            return Err(Untokenizable::Html)
+        }
+        Ok(Tokens {
             offset: 0,
             bounds: Breaker::new(s),
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
-            html_tags: if options.contains(&TokenizerOptions::DetectHtml) { detect_html(s) } else { VecDeque::new() },
             wconv: if options.contains(&TokenizerOptions::RusLatConversion) { detect_conversion(s) } else { None },
-        }
+        })
     }
     fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
         let tok = PositionalToken {
@@ -497,13 +503,7 @@ impl<'t> Tokens<'t> {
         if check {
             let mut url = "".to_string();
             let tag_bound = {
-                let bb_bound = if self.bbcodes.len()>0 { Some(self.bbcodes[0].0) } else { None };
-                let html_bound = if self.html_tags.len()>0 { Some(self.html_tags[0].0) } else { None };
-                match (bb_bound,html_bound) {
-                    (Some(bb),Some(ht)) => Some(if ht>bb { bb } else { ht }),
-                    (Some(b),None) | (None,Some(b)) => Some(b),
-                    (None,None) => None,
-                }
+                if self.bbcodes.len()>0 { Some(self.bbcodes[0].0) } else { None }
             };
             loop {
                 if let Some(b) = tag_bound {
@@ -632,32 +632,6 @@ impl<'t> Tokens<'t> {
 impl<'t> Tokenizer for Tokens<'t> {
     fn next_token(&mut self) -> Option<PositionalToken> { loop {
         if self.buffer.len()>0 {
-            if (self.html_tags.len()>0)&&(self.html_tags[0].0 == self.offset) {
-                let (get_from,get_len) = self.html_tags[0];
-                let mut cur_off = self.offset;
-                let mut buf_len = 0;
-                for bt in &self.buffer {
-                    if (cur_off>=get_from)&&(cur_off<(get_from+get_len)) {
-                        buf_len += 1; 
-                        cur_off += bt.len();
-                    }
-                }
-                while cur_off<(get_from+get_len) {
-                    match self.bounds.next() {
-                        None => break,
-                        Some(bt) => {
-                            if (cur_off>=get_from)&&(cur_off<(get_from+get_len)) { buf_len += 1; }
-                            cur_off += bt.len();
-                            self.buffer.push_back(bt);
-                        }
-                    }
-                }
-                let mut tail = self.buffer.split_off(buf_len);
-                std::mem::swap(&mut tail,&mut self.buffer);
-                self.html_tags.pop_front();
-                self.offset = cur_off;
-                continue;
-            }
             if (self.bbcodes.len()>0)&&(self.bbcodes[0].0 == self.offset) {
                 let get_len = self.bbcodes[0].1 + self.bbcodes[0].2 + 3;
                 let (text_from,text_len) = (self.bbcodes[0].0+1,self.bbcodes[0].1);
@@ -716,15 +690,15 @@ impl<'t> Iterator for Tokens<'t> {
 
 pub trait IntoTokenizer {
     type IntoTokens: Tokenizer;
-    fn into_tokens(self) -> Self::IntoTokens;
-    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens;
+    fn into_tokens(self) -> Result<Self::IntoTokens,Untokenizable>;
+    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Result<Self::IntoTokens,Untokenizable>;
 }
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
-    fn into_tokens(self) -> Self::IntoTokens {
+    fn into_tokens(self) -> Result<Self::IntoTokens,Untokenizable> {
         Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::RusLatConversion,TokenizerOptions::DetectHtml].into_iter().collect())
     }
-    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens {
+    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Result<Self::IntoTokens,Untokenizable> {
         Tokens::new(self,options)
     }
 }
@@ -832,7 +806,7 @@ mod test {
             PositionalToken { offset: 221, length: 3, token: Token::Punctuation("...".to_string()) },
             PositionalToken { offset: 224, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
     }
 
@@ -858,7 +832,7 @@ mod test {
             PositionalToken { offset: 87, length: 4, token: Token::Emoji("brain".to_string()) },
             PositionalToken { offset: 91, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res);
     }
@@ -917,7 +891,7 @@ mod test {
             PositionalToken { offset: 222, length: 6, token: Token::Word("asdfsd".to_string()) },
             PositionalToken { offset: 228, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
@@ -1080,7 +1054,7 @@ mod test {
                 data: Vec::new(),
             } },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
@@ -1179,7 +1153,7 @@ mod test {
             PositionalToken { offset: 438, length: 18, token: Token::Word("полностью".to_string()) },
             PositionalToken { offset: 456, length: 3, token: Token::Unicode("u2026".to_string()) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
@@ -1385,8 +1359,12 @@ mod test {
             PositionalToken { offset: 2904, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 2905, length: 4, token: Token::Separator(Separator::Space) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
-        check_results(&result,&lib_res,uws);
+        match uws.into_tokens() {
+            Err(Untokenizable::Html) => {},
+            _ => panic!("Untokenizable::Html"),
+        }
+        //let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        //check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
 
@@ -1421,27 +1399,27 @@ mod test {
                     Token::Word("сохраненок".to_string())],
                 data: vec![Token::Numerical(Numerical::Alphanumeric("club113623432".to_string()))] } },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
 
-    #[test]
+    /*#[test]
     fn text_href_and_html () {
         let uws = "https://youtu.be/dQErLQZw3qA</a></p><figure data-type=\"102\" data-mode=\"\"  class=\"article_decoration_first article_decoration_last\" >\n";
         let result =  vec![
             PositionalToken { offset: 0, length: 28, token: Token::Url("https://youtu.be/dQErLQZw3qA".to_string()) },
             PositionalToken { offset: 132, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
-    }
+    }*/
 
     #[test]
-    fn new_test() {
+    fn numerical() {
         let uws = "12.02.18 31.28.34 23.11.2018 123.568.365.234.578 127.0.0.1 1st 1кг 123123афываыв 12321фвафыов234выалфо 12_123_343.4234_4234";
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         //print_result(&lib_res); panic!("");
         let result = vec![
             PositionalToken { offset: 0, length: 8, token: Token::Numerical(Numerical::DotSeparated("12.02.18".to_string())) },
@@ -1471,7 +1449,7 @@ mod test {
     /*#[test]
     fn new_test() {
         let uws = "";
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         print_result(&lib_res); panic!("");
         let result = vec![];
         check_results(&result,&lib_res,uws);
