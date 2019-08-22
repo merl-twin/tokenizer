@@ -287,12 +287,12 @@ impl<'t> Tokens<'t> {
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
         })
     }
-    fn without_html<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Tokens<'a> {
+    fn basic<'a>(s: &'a str) -> Tokens<'a> {
         Tokens {
             offset: 0,
             bounds: Breaker::new(s),
             buffer: VecDeque::new(),
-            bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
+            bbcodes: VecDeque::new(),
         }
     }
     fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
@@ -648,7 +648,7 @@ impl<'t> IntoTokenizer for &'t str {
         Tokens::new(self,options)
     }
     fn basic_tokens(self) -> Self::IntoTokens {
-        Tokens::without_html(self,vec![TokenizerOptions::DetectBBCode].into_iter().collect())
+        Tokens::basic(self)
     }
 }
 
