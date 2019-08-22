@@ -1,13 +1,15 @@
 #[macro_use]
 extern crate lazy_static;
 extern crate unicode_segmentation;
+extern crate unicode_categories;
 extern crate regex;
 
+use unicode_categories::UnicodeCategories;
 use regex::Regex;
 
 use unicode_segmentation::{UnicodeSegmentation,UWordBounds};
 use std::str::FromStr;
-use std::collections::{VecDeque,BTreeSet,BTreeMap};
+use std::collections::{VecDeque,BTreeSet};
 
 mod emoji;
 
@@ -37,6 +39,14 @@ pub enum Separator {
     Tab,
     Newline,
     Unknown,
+    Char(char),
+}
+
+#[derive(Debug,Clone,Copy,Eq,PartialEq,Ord,PartialOrd)]
+pub enum Formater {
+    Char(char),
+    Joiner, // u{200d}
+    Unknown,
 }
 
 #[derive(Debug,Clone,PartialEq,PartialOrd,Eq)]
@@ -45,6 +55,7 @@ pub enum BasicToken<'t> {
     Number(&'t str),
     Punctuation(&'t str),
     Separator(&'t str),
+    Formater(&'t str),
     Mixed(&'t str),
 }
 impl<'t> BasicToken<'t> {
@@ -54,6 +65,7 @@ impl<'t> BasicToken<'t> {
             BasicToken::Number(s) |
             BasicToken::Punctuation(s) |
             BasicToken::Mixed(s) |
+            BasicToken::Formater(s) |
             BasicToken::Separator(s) => s.len(),
         }
     }
@@ -71,8 +83,10 @@ pub enum Token {
     Emoji(String),
     Unicode(String),
     Separator(Separator),
+    UnicodeFormater(Formater),
+    UnicodeModifier(char),
     Url(String),
-    BBCode { text: Vec<Token>, data: Vec<Token> },
+    BBCode { left: Vec<Token>, right: Vec<Token> },
 }
 
 #[derive(Debug,Clone,PartialEq,PartialOrd)]
@@ -86,128 +100,83 @@ pub struct PositionalToken {
 pub enum TokenizerOptions {
     DetectHtml,
     DetectBBCode,
-    RusLatConversion,
 }
 
-enum ConvertBothPolicy {
-    Immutable,
-    ToCyrillic,
-    ToLatin,
-}
-enum WordStatus {
-    Cyrillic,
-    Latin,
-    Both,
-    MixedLatinable,
-    MixedCyrillicable,
-    Mixed,
-    Unknown,
-}
-struct WordConvertor {
-    cyrillic: BTreeSet<char>,
-    latin: BTreeSet<char>,
-    cyr2lat: BTreeMap<char,char>,
-    lat2cyr: BTreeMap<char,char>,
-
-    policy: ConvertBothPolicy,
-}
-impl WordConvertor {
-    fn new() -> WordConvertor {
-        let similar: Vec<(char,char)>  /* rus,lat */ = vec![
-            ('а','a'),('е','e'),('к','k'),('о','o'),('р','p'),('с','c'),('у','y'),('х','x'),('и','u'),('п','n'),//('т','m'),('м','m'),('н','h'),('т','t'), r -> г р
-            ('А','A'),('В','B'),('Е','E'),('К','K'),('М','M'),('Н','H'),('О','O'),('Р','P'),('С','C'),('Т','T'),('У','Y'),('Х','X'),
-            ];
-        WordConvertor {
-            cyrillic: "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ".chars().collect(),
-            latin: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().collect(),
-            cyr2lat: similar.iter().cloned().collect(),
-            lat2cyr: similar.iter().cloned().map(|(c,l)| (l,c)).collect(),
-            policy: ConvertBothPolicy::Immutable,
-        }
-    }
-    fn set_policy(&mut self, policy: ConvertBothPolicy) {
-        self.policy = policy;
-    }
-    fn word_status(&self,s: &str) -> WordStatus {
-        let mut cyr = 0;
-        let mut lat = 0;
-        let mut sim_cyr = 0;
-        let mut sim_lat = 0;
-        for c in s.chars() {
-            if self.cyrillic.contains(&c) {
-                match self.cyr2lat.contains_key(&c) {
-                    true => sim_cyr += 1,
-                    false => cyr += 1,
-                }
-            }
-            if self.latin.contains(&c) {
-                match self.lat2cyr.contains_key(&c) {
-                    true => sim_lat += 1,
-                    false => lat += 1,
-                }
-            }
-        }
-        match (cyr,lat) {
-            (0,0) => match sim_cyr+sim_lat {
-                0 => { WordStatus::Unknown },
-                _ => { WordStatus::Both },
-            },
-            (0,_) => match sim_cyr {
-                0 => { WordStatus::Latin },
-                _ => { WordStatus::MixedLatinable },
-            },
-            (_,0) => match sim_lat {
-                0 => { WordStatus::Cyrillic },
-                _ => { WordStatus::MixedCyrillicable },
-            },
-            (_,_) => { WordStatus::Mixed },
-        }
-    }
-    fn to_cyrillic(&self, s: &str) -> String {
-        let mut res = String::with_capacity(s.len());
-        for c in s.chars() {
-            match self.lat2cyr.get(&c) {
-                None => res.push(c),
-                Some(c) => res.push(*c),
-            }
-        }
-        res
-    }
-    fn to_latin(&self, s: &str) -> String {
-        let mut res = String::with_capacity(s.len());
-        for c in s.chars() {
-            match self.cyr2lat.get(&c) {
-                None => res.push(c),
-                Some(c) => res.push(*c),
-            }
-        }
-        res
-    }
-    fn convert(&self,s: &str) -> String {
-        let status = self.word_status(s);
-        match (status,&self.policy) {
-            (WordStatus::Cyrillic,_) => s.to_string(),
-            (WordStatus::Latin,_) => s.to_string(),       
-            (WordStatus::MixedLatinable,_) => self.to_latin(s),
-            (WordStatus::MixedCyrillicable,_) => self.to_cyrillic(s),
-            (_,ConvertBothPolicy::Immutable) => s.to_string(),
-            (_,ConvertBothPolicy::ToCyrillic) => self.to_cyrillic(s),
-            (_,ConvertBothPolicy::ToLatin) => self.to_latin(s),
-        }
-    }
-}
-
-struct Breaker<'t> {
+struct ExtWordBounds<'t> {
     offset: usize,
     initial: &'t str,
-    bounds: std::iter::Peekable<UWordBounds<'t>>,
+    bounds: UWordBounds<'t>,
+    buffer: VecDeque<&'t str>,
+    exceptions: BTreeSet<char>,
+}
+impl<'t> ExtWordBounds<'t> {
+    fn new<'a>(s: &'a str) -> ExtWordBounds<'a> {
+        ExtWordBounds {
+            offset: 0,
+            initial: s,
+            bounds: s.split_word_bounds(),
+            buffer: VecDeque::new(),
+            exceptions: ['\u{200d}'].iter().cloned().collect(),
+        }
+    }
+}
+impl<'t> Iterator for ExtWordBounds<'t> {
+    type Item = &'t str;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer.len() > 0 { return self.buffer.pop_front(); }
+        match self.bounds.next() {
+            None => None,
+            Some(w) => {
+                let mut len = 0;
+                let mut chs = w.chars().peekable();
+                while let Some(c) = chs.next() {
+                    if c.is_other_format() {
+                        if (!self.exceptions.contains(&c))||
+                            ((c == '\u{200d}') && chs.peek().is_none()) {
+                            if len > 0 {
+                                self.buffer.push_back(&self.initial[self.offset .. self.offset+len]);
+                                self.offset += len;
+                                len = 0;
+                            }
+                            self.buffer.push_back(&self.initial[self.offset .. self.offset+c.len_utf8()]);
+                            self.offset += c.len_utf8();
+                        } else {
+                            len += c.len_utf8();
+                        }
+                    } else {
+                        len += c.len_utf8();
+                    }
+                }
+                if len > 0 {
+                    self.buffer.push_back(&self.initial[self.offset .. self.offset+len]);
+                    self.offset += len;
+                }
+                self.next()
+            },
+        }
+    }
+}
+
+fn one_char_word(w: &str) -> Option<char> {
+    // returns Some(char) if len in char == 1, None otherwise
+    let mut cs = w.chars();
+    match (cs.next(),cs.next()) {
+        (Some(c),None) => Some(c),
+        _ => None,
+    }
+}
+
+pub struct Breaker<'t> {
+    offset: usize,
+    initial: &'t str,
+    bounds: std::iter::Peekable<ExtWordBounds<'t>>,
 }
 impl<'t> Breaker<'t> {
-    fn new<'a>(s: &'a str) -> Breaker<'a> {
+    pub fn new<'a>(s: &'a str) -> Breaker<'a> {
         Breaker {
             offset: 0,
             initial: s,
-            bounds: s.split_word_bounds().peekable(),
+            bounds: ExtWordBounds::new(s).peekable(),
         }
     }
 }
@@ -216,21 +185,23 @@ impl<'t> Iterator for Breaker<'t> {
     fn next(&mut self) -> Option<Self::Item> {
         match self.bounds.next() {
             Some(w) => {
-                if w.len() == 1 {
-                    let c = w.chars().next().unwrap(); //safe unwrap 
-                    if c.is_ascii_punctuation() || c.is_whitespace() {
-                        let mut len = 1;
+                if let Some(c) = one_char_word(w) {
+                    if c.is_ascii_punctuation() || c.is_punctuation() || c.is_whitespace() || c.is_other_format() {
+                        let mut len = c.len_utf8();
                         loop {
                             match self.bounds.peek() {
-                                Some(p) if *p==w => len += 1,
+                                Some(p) if *p==w => len += c.len_utf8(),
                                 _ => break,
                             }
                             self.bounds.next();
                         }
                         let p = &self.initial[self.offset .. self.offset+len];
                         self.offset += len;
-                        if c.is_ascii_punctuation() {
+                        if c.is_ascii_punctuation() || c.is_punctuation() {
                             return Some(BasicToken::Punctuation(p));
+                        }
+                        if c.is_other_format() {
+                            return Some(BasicToken::Formater(p));
                         } else {
                             return Some(BasicToken::Separator(p));
                         }
@@ -293,49 +264,6 @@ fn detect_html(s: &str) -> usize {
     res.len()
 }
 
-#[derive(Debug,Default)]
-struct WC {
-    cyrillic: usize,
-    latin: usize,
-    both: usize,
-    mixed: usize,
-    unknown: usize,
-}
-fn detect_conversion(s: &str) -> Option<WordConvertor> {
-    let mut wconv = WordConvertor::new();
-    let mut before = WC::default();
-    let mut after = WC::default();
-    for tok in s.into_tokens_with_options(vec![TokenizerOptions::DetectBBCode].into_iter().collect()).unwrap() {
-        match &tok.token {
-            Token::Word(s) => {
-                match wconv.word_status(s) {
-                    WordStatus::Unknown => { before.unknown += 1; after.unknown += 1; },
-                    WordStatus::Both => { before.both += 1; after.both += 1; },
-                    WordStatus::Latin => { before.latin += 1; after.latin +=1; },
-                    WordStatus::MixedLatinable => { before.mixed += 1; after.latin +=1; },
-                    WordStatus::Cyrillic => { before.cyrillic += 1; after.cyrillic +=1; },
-                    WordStatus::MixedCyrillicable => { before.mixed += 1; after.cyrillic +=1; },
-                    WordStatus::Mixed => { before.mixed += 1; after.mixed +=1; },
-                }
-            },
-            _ => continue,
-        }
-    }
-    //println!("{:?}",before);
-    //println!("{:?}",after);
-    if (before.mixed>0)&&((f64::from(after.mixed as u32)/f64::from(before.mixed as u32))<0.5) {
-        if (after.cyrillic>0)&&((f64::from(after.latin as u32)/f64::from(after.cyrillic as u32))<0.1) {
-            wconv.set_policy(ConvertBothPolicy::ToCyrillic);
-        }
-        if (after.latin>0)&&((f64::from(after.cyrillic as u32)/f64::from(after.latin as u32))<0.1) {
-            wconv.set_policy(ConvertBothPolicy::ToLatin);
-        }
-        Some(wconv)
-    } else {
-        None
-    }
-}
-
 #[derive(Debug)]
 pub enum Untokenizable {
     Html,
@@ -346,7 +274,6 @@ pub struct Tokens<'t> {
     bounds: Breaker<'t>,
     buffer: VecDeque<BasicToken<'t>>,
     bbcodes: VecDeque<(usize,usize,usize)>,
-    wconv: Option<WordConvertor>,
 }
 impl<'t> Tokens<'t> {
     fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Result<Tokens<'a>,Untokenizable> {
@@ -358,23 +285,36 @@ impl<'t> Tokens<'t> {
             bounds: Breaker::new(s),
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
-            wconv: if options.contains(&TokenizerOptions::RusLatConversion) { detect_conversion(s) } else { None },
         })
     }
     fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
         let tok = PositionalToken {
             offset: self.offset,
             length: s.len(),
-            token: match &s[0..1] {
-                " " => Token::Separator(Separator::Space),
-                "\n" => Token::Separator(Separator::Newline),
-                "\t" => Token::Separator(Separator::Tab),
-                _ => Token::Separator(Separator::Unknown),
-            }
+            token: Token::Separator(match s.chars().next() {
+                Some(' ') => Separator::Space,
+                Some('\n') => Separator::Newline,
+                Some('\t') => Separator::Tab,
+                Some(c) => Separator::Char(c),
+                None => Separator::Unknown,
+            })
         };
         self.offset += s.len();
         tok
     }
+    fn basic_formater_to_pt(&mut self, s: &str) -> PositionalToken {
+        let tok = PositionalToken {
+            offset: self.offset,
+            length: s.len(),
+            token: Token::UnicodeFormater(match s.chars().next() {
+                Some('\u{200d}') => Formater::Joiner,
+                Some(c) => Formater::Char(c),
+                None => Formater::Unknown,
+            }),
+        };
+        self.offset += s.len();
+        tok
+    }   
     fn basic_number_to_pt(&mut self, s: &str) -> PositionalToken {
         let tok = PositionalToken {
             offset: self.offset,
@@ -400,16 +340,19 @@ impl<'t> Tokens<'t> {
                 let rs = s.replace("\u{fe0f}","");
                 match EMOJIMAP.get(&rs as &str) {
                     Some(em) => Token::Emoji(em.to_string()),
-                    None => Token::Unicode({
-                        let mut us = "".to_string();
-                        for c in rs.chars() {
-                            if us!="" { us += "_"; }
-                            us += "u";
-                            let ns = format!("{}",c.escape_unicode());
-                            us += &ns[3 .. ns.len()-1];
-                        }
-                        us
-                    }),
+                    None => match one_char_word(&rs) {
+                        Some(c) if c.is_symbol_modifier() => Token::UnicodeModifier(c),
+                        Some(_) | None => Token::Unicode({
+                            let mut us = "".to_string();
+                            for c in rs.chars() {
+                                if us!="" { us += "_"; }
+                                us += "u";
+                                let ns = format!("{}",c.escape_unicode());
+                                us += &ns[3 .. ns.len()-1];
+                            }
+                            us
+                        })
+                    },
                 }
             }
         };
@@ -468,10 +411,7 @@ impl<'t> Tokens<'t> {
                 }
                 (false,false,_,true,false) => {
                     // Word
-                    Token::Word(match &self.wconv {
-                        None => s.to_string(),
-                        Some(wconv) => wconv.convert(s),
-                    })
+                    Token::Word(s.to_string())
                 },
                 (false,false,_,_,_) => {
                     // Strange
@@ -518,6 +458,7 @@ impl<'t> Tokens<'t> {
                     Some(BasicToken::Alphanumeric(s)) |
                     Some(BasicToken::Number(s)) |
                     Some(BasicToken::Punctuation(s)) |
+                    Some(BasicToken::Formater(s)) |
                     Some(BasicToken::Mixed(s)) => {
                         url += s;
                     },
@@ -598,17 +539,10 @@ impl<'t> Tokens<'t> {
                     }
                     std::mem::swap(&mut tail,&mut self.buffer);
                     self.buffer.pop_front(); self.offset += 1;
-                    // vk bbcode check
-                    if (text_vec.len()==1)&&(match text_vec[0] {
-                        Token::Numerical(Numerical::Alphanumeric(..)) => true,
-                        _ => false,
-                    }) {
-                        std::mem::swap(&mut text_vec,&mut data_vec);
-                    }
                     Some(PositionalToken {
                         offset: offset,
                         length: self.offset - offset,
-                        token: Token::BBCode{ text: text_vec, data: data_vec },
+                        token: Token::BBCode{ left: text_vec, right: data_vec },
                     })
                 } else { None }
         } else { None }
@@ -624,60 +558,63 @@ impl<'t> Tokens<'t> {
             Some(BasicToken::Punctuation(s)) => Some(self.basic_punctuation_to_pt(s)),
             Some(BasicToken::Mixed(s)) => Some(self.basic_mixed_to_pt(s)),
             Some(BasicToken::Separator(s)) => Some(self.basic_separator_to_pt(s)),
+            Some(BasicToken::Formater(s)) => Some(self.basic_formater_to_pt(s)),
             None => None,
         }
     }
 }
 
 impl<'t> Tokenizer for Tokens<'t> {
-    fn next_token(&mut self) -> Option<PositionalToken> { loop {
-        if self.buffer.len()>0 {
-            if (self.bbcodes.len()>0)&&(self.bbcodes[0].0 == self.offset) {
-                let get_len = self.bbcodes[0].1 + self.bbcodes[0].2 + 3;
-                let (text_from,text_len) = (self.bbcodes[0].0+1,self.bbcodes[0].1);
-                let (text2_from,text2_len) = (self.bbcodes[0].0+self.bbcodes[0].1+2,self.bbcodes[0].2);
-                let mut cur_len = 0;
-                let mut cur_off = self.offset;
-                let mut buf1_len = 0;
-                let mut buf2_len = 0;
-                for bt in &self.buffer {
-                    if (cur_off>=text_from)&&(cur_off<(text_from+text_len)) { buf1_len += 1; } 
-                    if (cur_off>=text2_from)&&(cur_off<(text2_from+text2_len)) { buf2_len += 1; }
-                    cur_off += bt.len();
-                    cur_len += bt.len();
-                }
-                while cur_len<get_len {
-                    match self.bounds.next() {
-                        None => break,
-                        Some(bt) => {
-                            if (cur_off>=text_from)&&(cur_off<(text_from+text_len)) { buf1_len += 1; } 
-                            if (cur_off>=text2_from)&&(cur_off<(text2_from+text2_len)) { buf2_len += 1; }
-                            cur_off += bt.len();
-                            cur_len += bt.len();
-                            self.buffer.push_back(bt);
+    fn next_token(&mut self) -> Option<PositionalToken> {
+        loop {
+            if self.buffer.len()>0 {
+                if (self.bbcodes.len()>0)&&(self.bbcodes[0].0 == self.offset) {
+                    let get_len = self.bbcodes[0].1 + self.bbcodes[0].2 + 3;
+                    let (text_from,text_len) = (self.bbcodes[0].0+1,self.bbcodes[0].1);
+                    let (text2_from,text2_len) = (self.bbcodes[0].0+self.bbcodes[0].1+2,self.bbcodes[0].2);
+                    let mut cur_len = 0;
+                    let mut cur_off = self.offset;
+                    let mut buf1_len = 0;
+                    let mut buf2_len = 0;
+                    for bt in &self.buffer {
+                        if (cur_off>=text_from)&&(cur_off<(text_from+text_len)) { buf1_len += 1; } 
+                        if (cur_off>=text2_from)&&(cur_off<(text2_from+text2_len)) { buf2_len += 1; }
+                        cur_off += bt.len();
+                        cur_len += bt.len();
+                    }
+                    while cur_len<get_len {
+                        match self.bounds.next() {
+                            None => break,
+                            Some(bt) => {
+                                if (cur_off>=text_from)&&(cur_off<(text_from+text_len)) { buf1_len += 1; } 
+                                if (cur_off>=text2_from)&&(cur_off<(text2_from+text2_len)) { buf2_len += 1; }
+                                cur_off += bt.len();
+                                cur_len += bt.len();
+                                self.buffer.push_back(bt);
+                            }
                         }
                     }
+                    //println!("{:?} {} {} {}",self.bbcodes[0],self.buffer.len(),buf1_len,buf2_len);
+                    //println!("{:?}",self.buffer);
+                    self.bbcodes.pop_front();
+                    if let Some(t) = self.check_bb_code(buf1_len,buf2_len) { return Some(t); }
                 }
-                //println!("{:?} {} {} {}",self.bbcodes[0],self.buffer.len(),buf1_len,buf2_len);
-                //println!("{:?}",self.buffer);
-                self.bbcodes.pop_front();
-                if let Some(t) = self.check_bb_code(buf1_len,buf2_len) { return Some(t); }
-            }
-            return self.next_from_buffer();
-        } else {
-            loop {
-                match self.bounds.next() {
-                    Some(BasicToken::Separator(s)) => {
-                        self.buffer.push_back(BasicToken::Separator(s));
-                        return self.next_token();
-                    },
-                    Some(bt) => self.buffer.push_back(bt),
-                    None if self.buffer.len()>0 => return self.next_token(),
-                    None => return None,
+                return self.next_from_buffer();
+            } else {
+                loop {
+                    match self.bounds.next() {
+                        Some(BasicToken::Separator(s)) => {
+                            self.buffer.push_back(BasicToken::Separator(s));
+                            return self.next_token();
+                        },
+                        Some(bt) => self.buffer.push_back(bt),
+                        None if self.buffer.len()>0 => return self.next_token(),
+                        None => return None,
+                    }
                 }
             }
         }
-    }}
+    }
 }
 
 impl<'t> Iterator for Tokens<'t> {
@@ -696,7 +633,7 @@ pub trait IntoTokenizer {
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
     fn into_tokens(self) -> Result<Self::IntoTokens,Untokenizable> {
-        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::RusLatConversion,TokenizerOptions::DetectHtml].into_iter().collect())
+        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::DetectHtml].into_iter().collect())
     }
     fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Result<Self::IntoTokens,Untokenizable> {
         Tokens::new(self,options)
@@ -725,14 +662,9 @@ mod test {
     }
 
     fn check_results(result: &Vec<PositionalToken>, lib_res: &Vec<PositionalToken>, uws: &str) {
-        if result.len()!=lib_res.len() { assert_eq!(result,lib_res); }
+        assert_eq!(result.len(),lib_res.len());
         for i in 0 .. result.len() {
             assert_eq!(result[i],lib_res[i]);
-            /*let tok = &lib_res[i];
-            match &tok.token {
-                Token::Punctuation(s) => assert_eq!(s,&uws[tok.offset .. tok.offset+tok.length]),
-                _ => {},
-            }*/
         }
     }
     
@@ -811,6 +743,17 @@ mod test {
     }
 
     #[test]
+    #[ignore]
+    fn woman_bouncing_ball() {
+        let uws = "\u{26f9}\u{200d}\u{2640}";
+        let result = vec![PositionalToken { offset: 0, length: 9, token: Token::Emoji("woman_bouncing_ball".to_string()) }];
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+        //print_result(&lib_res); panic!("")
+        panic!();
+    } 
+    
+    #[test]
     fn emoji_and_rusabbr() {
         let uws = "🇷🇺 🇸🇹\n👱🏿👶🏽👨🏽\n👱\nС.С.С.Р.\n👨‍👩‍👦‍👦\n🧠\n";
         let result = vec![
@@ -832,9 +775,10 @@ mod test {
             PositionalToken { offset: 87, length: 4, token: Token::Emoji("brain".to_string()) },
             PositionalToken { offset: 91, length: 1, token: Token::Separator(Separator::Newline) },
             ];
+        
         let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
-        //print_result(&lib_res);
+        //print_result(&lib_res); panic!();
     }
 
     #[test]
@@ -901,11 +845,11 @@ mod test {
         let uws = "[Oxana Putan|1712640565] shared a [post|100001150683379_1873048549410150]. \nAndrew\n[link|https://www.facebook.com/100001150683379/posts/1873048549410150]\nДрузья мои, издатели, редакторы, просветители, культуртрегеры, субъекты мирового рынка и ту хум ит ещё мей консёрн.\nНа текущий момент я лишен былой подвижности, хоть и ковыляю по больничных коридорам по разным нуждам и за кипятком.\nВрачи обещают мне заживление отверстых ран моих в течение полугода и на этот период можно предполагать с уверенностью преимущественно домашний образ жизни.\n[|]";
         let result = vec![
             PositionalToken { offset: 0, length: 24, token: Token::BBCode {
-                text: vec![
+                left: vec![
                     Token::Word("Oxana".to_string()),
                     Token::Separator(Separator::Space),
                     Token::Word("Putan".to_string()) ],
-                data: vec![ Token::Number(Number::Integer(1712640565))],
+                right: vec![ Token::Number(Number::Integer(1712640565))],
             } },
             PositionalToken { offset: 24, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 25, length: 6, token: Token::Word("shared".to_string()) },
@@ -913,8 +857,8 @@ mod test {
             PositionalToken { offset: 32, length: 1, token: Token::Word("a".to_string()) },
             PositionalToken { offset: 33, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 34, length: 39, token: Token::BBCode {
-                text: vec![ Token::Word("post".to_string()) ],
-                data: vec![ Token::Numerical(Numerical::Alphanumeric("100001150683379_1873048549410150".to_string())) ],
+                left: vec![ Token::Word("post".to_string()) ],
+                right: vec![ Token::Numerical(Numerical::Alphanumeric("100001150683379_1873048549410150".to_string())) ],
             } },
             PositionalToken { offset: 73, length: 1, token: Token::Punctuation(".".to_string()) },
             PositionalToken { offset: 74, length: 1, token: Token::Separator(Separator::Space) },
@@ -922,8 +866,8 @@ mod test {
             PositionalToken { offset: 76, length: 6, token: Token::Word("Andrew".to_string()) },
             PositionalToken { offset: 82, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 83, length: 70, token: Token::BBCode {
-                text: vec![ Token::Word("link".to_string()) ],
-                data: vec![ Token::Url("https://www.facebook.com/100001150683379/posts/1873048549410150".to_string()) ],
+                left: vec![ Token::Word("link".to_string()) ],
+                right: vec![ Token::Url("https://www.facebook.com/100001150683379/posts/1873048549410150".to_string()) ],
             } },
             PositionalToken { offset: 153, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 154, length: 12, token: Token::Word("Друзья".to_string()) },
@@ -1050,8 +994,8 @@ mod test {
             PositionalToken { offset: 862, length: 1, token: Token::Punctuation(".".to_string()) },
             PositionalToken { offset: 863, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 864, length: 3, token: Token::BBCode {
-                text: Vec::new(),
-                data: Vec::new(),
+                left: Vec::new(),
+                right: Vec::new(),
             } },
             ];
         let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
@@ -1059,106 +1003,6 @@ mod test {
         //print_result(&lib_res); panic!("")
     }
 
-    #[test]
-    fn ruslat() {
-        let uws = "Именнo этoт мужчинa пришёл в вашу жизнь неспрoста\n\nЕсли вы пoнимаете назначение челoвека в жизни, вам станет легче научиться испытывать к нему любoвь, пoтoму чтo будет пoнимание, чтo челoвек в мoей жизни - учитель, и я ему за этo благoдарна.\nПоказать полностью…";
-        let result = vec![
-            PositionalToken { offset: 0, length: 11, token: Token::Word("Именно".to_string()) },
-            PositionalToken { offset: 11, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 12, length: 7, token: Token::Word("этот".to_string()) },
-            PositionalToken { offset: 19, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 20, length: 13, token: Token::Word("мужчина".to_string()) },
-            PositionalToken { offset: 33, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 34, length: 12, token: Token::Word("пришёл".to_string()) },
-            PositionalToken { offset: 46, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 47, length: 2, token: Token::Word("в".to_string()) },
-            PositionalToken { offset: 49, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 50, length: 8, token: Token::Word("вашу".to_string()) },
-            PositionalToken { offset: 58, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 59, length: 10, token: Token::Word("жизнь".to_string()) },
-            PositionalToken { offset: 69, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 70, length: 17, token: Token::Word("неспроста".to_string()) },
-            PositionalToken { offset: 87, length: 2, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 89, length: 8, token: Token::Word("Если".to_string()) },
-            PositionalToken { offset: 97, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 98, length: 4, token: Token::Word("вы".to_string()) },
-            PositionalToken { offset: 102, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 103, length: 17, token: Token::Word("понимаете".to_string()) },
-            PositionalToken { offset: 120, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 121, length: 20, token: Token::Word("назначение".to_string()) },
-            PositionalToken { offset: 141, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 142, length: 15, token: Token::Word("человека".to_string()) },
-            PositionalToken { offset: 157, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 158, length: 2, token: Token::Word("в".to_string()) },
-            PositionalToken { offset: 160, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 161, length: 10, token: Token::Word("жизни".to_string()) },
-            PositionalToken { offset: 171, length: 1, token: Token::Punctuation(",".to_string()) },
-            PositionalToken { offset: 172, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 173, length: 6, token: Token::Word("вам".to_string()) },
-            PositionalToken { offset: 179, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 180, length: 12, token: Token::Word("станет".to_string()) },
-            PositionalToken { offset: 192, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 193, length: 10, token: Token::Word("легче".to_string()) },
-            PositionalToken { offset: 203, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 204, length: 18, token: Token::Word("научиться".to_string()) },
-            PositionalToken { offset: 222, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 223, length: 20, token: Token::Word("испытывать".to_string()) },
-            PositionalToken { offset: 243, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 244, length: 2, token: Token::Word("к".to_string()) },
-            PositionalToken { offset: 246, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 247, length: 8, token: Token::Word("нему".to_string()) },
-            PositionalToken { offset: 255, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 256, length: 11, token: Token::Word("любовь".to_string()) },
-            PositionalToken { offset: 267, length: 1, token: Token::Punctuation(",".to_string()) },
-            PositionalToken { offset: 268, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 269, length: 10, token: Token::Word("потому".to_string()) },
-            PositionalToken { offset: 279, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 280, length: 5, token: Token::Word("что".to_string()) },
-            PositionalToken { offset: 285, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 286, length: 10, token: Token::Word("будет".to_string()) },
-            PositionalToken { offset: 296, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 297, length: 17, token: Token::Word("понимание".to_string()) },
-            PositionalToken { offset: 314, length: 1, token: Token::Punctuation(",".to_string()) },
-            PositionalToken { offset: 315, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 316, length: 5, token: Token::Word("что".to_string()) },
-            PositionalToken { offset: 321, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 322, length: 13, token: Token::Word("человек".to_string()) },
-            PositionalToken { offset: 335, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 336, length: 2, token: Token::Word("в".to_string()) },
-            PositionalToken { offset: 338, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 339, length: 7, token: Token::Word("моей".to_string()) },
-            PositionalToken { offset: 346, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 347, length: 10, token: Token::Word("жизни".to_string()) },
-            PositionalToken { offset: 357, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 358, length: 1, token: Token::Punctuation("-".to_string()) },
-            PositionalToken { offset: 359, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 360, length: 14, token: Token::Word("учитель".to_string()) },
-            PositionalToken { offset: 374, length: 1, token: Token::Punctuation(",".to_string()) },
-            PositionalToken { offset: 375, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 376, length: 2, token: Token::Word("и".to_string()) },
-            PositionalToken { offset: 378, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 379, length: 2, token: Token::Word("я".to_string()) },
-            PositionalToken { offset: 381, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 382, length: 6, token: Token::Word("ему".to_string()) },
-            PositionalToken { offset: 388, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 389, length: 4, token: Token::Word("за".to_string()) },
-            PositionalToken { offset: 393, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 394, length: 5, token: Token::Word("это".to_string()) },
-            PositionalToken { offset: 399, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 400, length: 19, token: Token::Word("благодарна".to_string()) },
-            PositionalToken { offset: 419, length: 1, token: Token::Punctuation(".".to_string()) },
-            PositionalToken { offset: 420, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 421, length: 16, token: Token::Word("Показать".to_string()) },
-            PositionalToken { offset: 437, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 438, length: 18, token: Token::Word("полностью".to_string()) },
-            PositionalToken { offset: 456, length: 3, token: Token::Unicode("u2026".to_string()) },
-            ];
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
-        check_results(&result,&lib_res,uws);
-        //print_result(&lib_res); panic!("")
-    }
-    
- 
 
     #[test]
     fn html() {
@@ -1373,7 +1217,7 @@ mod test {
         let uws = "[club113623432|💜💜💜 - для девушек] \n[club113623432|💛💛💛 - для сохраненок]";
         let result = vec![
             PositionalToken { offset: 0, length: 52, token: Token::BBCode {
-                text: vec![
+                right: vec![
                     Token::Emoji("purple_heart".to_string()),
                     Token::Emoji("purple_heart".to_string()),
                     Token::Emoji("purple_heart".to_string()),
@@ -1383,11 +1227,11 @@ mod test {
                     Token::Word("для".to_string()),
                     Token::Separator(Separator::Space),
                     Token::Word("девушек".to_string())],
-                data: vec![Token::Numerical(Numerical::Alphanumeric("club113623432".to_string()))] } },
+                left: vec![Token::Numerical(Numerical::Alphanumeric("club113623432".to_string()))] } },
             PositionalToken { offset: 52, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 53, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 54, length: 58, token: Token::BBCode {
-                text: vec![
+                right: vec![
                     Token::Emoji("yellow_heart".to_string()),
                     Token::Emoji("yellow_heart".to_string()),
                     Token::Emoji("yellow_heart".to_string()),
@@ -1397,7 +1241,7 @@ mod test {
                     Token::Word("для".to_string()),
                     Token::Separator(Separator::Space),
                     Token::Word("сохраненок".to_string())],
-                data: vec![Token::Numerical(Numerical::Alphanumeric("club113623432".to_string()))] } },
+                left: vec![Token::Numerical(Numerical::Alphanumeric("club113623432".to_string()))] } },
             ];
         let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
@@ -1445,8 +1289,8 @@ mod test {
         check_results(&result,&lib_res,uws);
        
     }
-    
-    /*#[test]
+
+        /*#[test]
     fn new_test() {
         let uws = "";
         let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
@@ -1455,5 +1299,106 @@ mod test {
         check_results(&result,&lib_res,uws);
         
 }*/
+
+
+
+
+    /* Language tests */
+
+    enum Lang {
+        Zho,
+        Jpn,
+        Kor,
+        Ara,
+        Ell,
+    }
+
+    /*#[test]
+    fn test_lang_zho() {
+        let (uws,result) = get_lang_test(Lang::Zho);
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        print_result(&lib_res); panic!("");
+        check_results(&result,&lib_res,&uws);
+    }
+
+    #[test]
+    fn test_lang_jpn() {
+        let (uws,result) = get_lang_test(Lang::Jpn);
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        print_result(&lib_res); panic!("");
+        check_results(&result,&lib_res,&uws);
+    }
+
+    #[test]
+    fn test_lang_kor() {
+        let (uws,result) = get_lang_test(Lang::Kor);
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        print_result(&lib_res); panic!("");
+        check_results(&result,&lib_res,&uws);
+    }
+
+    #[test]
+    fn test_lang_ara() {
+        let (uws,result) = get_lang_test(Lang::Ara);
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        print_result(&lib_res); panic!("");
+        check_results(&result,&lib_res,&uws);
+    }*/
+
+    #[test]
+    fn test_lang_ell() {
+        let (uws,result) = get_lang_test(Lang::Ell);
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        check_results(&result,&lib_res,&uws);
+    }
+
+    fn get_lang_test(lng: Lang) -> (String, Vec<PositionalToken>) {
+        let text = match lng {
+            Lang::Zho => "美国电视连续剧《超人前传》的第一集《试播集》于2001年10月16日在電視網首播，剧集主创人阿尔弗雷德·高夫和迈尔斯·米勒編劇，大卫·努特尔执导。这一试播首次向观众引荐了克拉克·肯特一角，他是位拥有超能力的外星孤儿，与家人和朋友一起在堪薩斯州虚构小镇斯莫维尔生活。在这一集里，肯特首度得知自己的来历，同时还需要阻止一位学生试图杀死镇上高中多名学生的报复之举。本集节目里引入了多个之后将贯穿全季甚至整部剧集的主题元素，例如几位主要角色之间的三角恋情。电视剧在加拿大溫哥華取景，旨在选用其“美国中产阶级”景观，主创人花了5个月的时间专门用于为主角物色合适的演员。试播集在所有演员选好4天后正式开拍。由于时间上的限制，剧组无法搭建好实体外景，因此只能使用计算机绘图技术将数字化的外景插入到镜头中。节目一经上映就打破了电视网的多项收视纪录，并且获得了评论员的普遍好评和多个奖项提名，并在其中两项上胜出",
+            Lang::Kor =>  "플레이스테이션 은 소니 컴퓨터 엔터테인먼트가 개발한 세 번째 가정용 게임기이다. 마이크로소프트의 엑스박스 360, 닌텐도의 Wii와 경쟁하고 있다. 이전 제품에서 온라인 플레이 기능을 비디오 게임 개발사에 전적으로 의존하던 것과 달리 통합 온라인 게임 서비스인 플레이스테이션 네트워크 서비스를 발매와 함께 시작해 제공하고 있으며, 탄탄한 멀티미디어 재생 기능, 플레이스테이션 포터블과의 연결, 고화질 광학 디스크 포맷인 블루레이 디스크 재생 기능 등의 기능을 갖추고 있다. 2006년 11월 11일에 일본에서 처음으로 출시했으며, 11월 17일에는 북미 지역, 2007년 3월 23일에는 유럽과 오세아니아 지역에서, 대한민국의 경우 6월 5일부터 일주일간 예약판매를 실시해, 매일 준비한 수량이 동이 나는 등 많은 관심을 받았으며 6월 16일에 정식 출시 행사를 열었다",
+            Lang::Jpn => "熊野三山本願所は、15世紀末以降における熊野三山（熊野本宮、熊野新宮、熊野那智）の造営・修造のための勧進を担った組織の総称。 熊野三山を含めて、日本における古代から中世前半にかけての寺社の造営は、寺社領経営のような恒常的財源、幕府や朝廷などからの一時的な造営料所の寄進、あるいは公権力からの臨時の保護によって行われていた。しかしながら、熊野三山では、これらの財源はすべて15世紀半ばまでに実効性を失った",
+            Lang::Ara => "لشکرکشی‌های روس‌های وارنگی به دریای خزر مجموعه‌ای از حملات نظامی در بین سال‌های ۸۶۴ تا ۱۰۴۱ میلادی به سواحل دریای خزر بوده‌است. روس‌های وارنگی ابتدا در قرن نهم میلادی به عنوان بازرگانان پوست، عسل و برده در سرزمین‌های اسلامی(سرکلند) ظاهر شدند. این بازرگانان در مسیر تجاری ولگا به خرید و فروش می‌پرداختند. نخستین حملهٔ آنان در فاصله سال‌های ۸۶۴ تا ۸۸۴ میلادی در مقیاسی کوچک علیه علویان طبرستان رخ داد. نخستین یورش بزرگ روس‌ها در سال ۹۱۳ رخ داد و آنان با ۵۰۰ فروند درازکشتی شهر گرگان و اطراف آن را غارت کردند. آن‌ها در این حمله مقداری کالا و برده را به تاراج بردند و در راه بازگشتن به سمت شمال، در دلتای ولگا، مورد حملهٔ خزرهای مسلمان قرار گرفتند و بعضی از آنان موفق به فرار شدند، ولی در میانهٔ ولگا به قتل رسیدند. دومین هجوم بزرگ روس‌ها به دریای خزر در سال ۹۴۳ به وقوع پیوست. در این دوره ایگور یکم، حاکم روس کیف، رهبری روس‌ها را در دست داشت. روس‌ها پس از توافق با دولت خزرها برای عبور امن از منطقه، تا رود کورا و اعماق قفقاز پیش رفتند و در سال ۹۴۳ موفق شدند بندر بردعه، پایتخت اران (جمهوری آذربایجان کنونی)، را تصرف کنند. روس‌ها در آنجا به مدت چند ماه ماندند و بسیاری از ساکنان شهر را کشتند و از راه غارت‌گری اموالی را به تاراج بردند. تنها دلیل بازگشت آنان ",
+            Lang::Ell => "Το Πρόγραμμα υλοποιείται εξ ολοκλήρου από απόσταση και μπορεί να συμμετέχει κάθε εμπλεκόμενος στη ή/και ενδιαφερόμενος για τη διδασκαλία της Ελληνικής ως δεύτερης/ξένης γλώσσας στην Ελλάδα και στο εξωτερικό, αρκεί να είναι απόφοιτος ελληνικής φιλολογίας, ξένων φιλολογιών, παιδαγωγικών τμημάτων, θεολογικών σχολών ή άλλων πανεπιστημιακών τμημάτων ελληνικών ή ισότιμων ξένων πανεπιστημίων. Υπό όρους γίνονται δεκτοί υποψήφιοι που δεν έχουν ολοκληρώσει σπουδές τριτοβάθμιας εκπαίδευσης.",
+        }.chars().take(100).fold(String::new(),|acc,c| acc + &format!("{}",c));
+        let tokens = match lng {
+            Lang::Zho => Vec::new(),
+            Lang::Jpn => Vec::new(),
+            Lang::Kor => Vec::new(),
+            Lang::Ara => Vec::new(),
+            Lang::Ell => vec![
+                PositionalToken { offset: 0, length: 4, token: Token::Word("Το".to_string()) },
+                PositionalToken { offset: 4, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 5, length: 18, token: Token::Word("Πρόγραμμα".to_string()) },
+                PositionalToken { offset: 23, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 24, length: 22, token: Token::Word("υλοποιείται".to_string()) },
+                PositionalToken { offset: 46, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 47, length: 4, token: Token::Word("εξ".to_string()) },
+                PositionalToken { offset: 51, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 52, length: 18, token: Token::Word("ολοκλήρου".to_string()) },
+                PositionalToken { offset: 70, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 71, length: 6, token: Token::Word("από".to_string()) },
+                PositionalToken { offset: 77, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 78, length: 16, token: Token::Word("απόσταση".to_string()) },
+                PositionalToken { offset: 94, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 95, length: 6, token: Token::Word("και".to_string()) },
+                PositionalToken { offset: 101, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 102, length: 12, token: Token::Word("μπορεί".to_string()) },
+                PositionalToken { offset: 114, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 115, length: 4, token: Token::Word("να".to_string()) },
+                PositionalToken { offset: 119, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 120, length: 20, token: Token::Word("συμμετέχει".to_string()) },
+                PositionalToken { offset: 140, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 141, length: 8, token: Token::Word("κάθε".to_string()) },
+                PositionalToken { offset: 149, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 150, length: 24, token: Token::Word("εμπλεκόμενος".to_string()) },
+                PositionalToken { offset: 174, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 175, length: 6, token: Token::Word("στη".to_string()) },
+                PositionalToken { offset: 181, length: 1, token: Token::Separator(Separator::Space) },
+                PositionalToken { offset: 182, length: 2, token: Token::Word("ή".to_string()) },
+                PositionalToken { offset: 184, length: 1, token: Token::Punctuation("/".to_string()) },
+                ],
+        };
+        (text,tokens)
+    }
 }
  

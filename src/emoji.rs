@@ -580,7 +580,6 @@ lazy_static! {
         m.insert("\u{26ea}", "church");
         m.insert("\u{1f6ac}", "cigarette");
         m.insert("\u{1f3a6}", "cinema");
-        m.insert("\u{24c2}", "circled_m");
         m.insert("\u{1f3aa}", "circus_tent");
         m.insert("\u{1f3d9}", "cityscape");
         m.insert("\u{1f306}", "cityscape_at_dusk");
@@ -705,7 +704,6 @@ lazy_static! {
         m.insert("\u{1f6aa}", "door");
         m.insert("\u{1f52f}", "dotted_six_pointed_star");
         m.insert("\u{27bf}", "double_curly_loop");
-        m.insert("\u{203c}", "double_exclamation_mark");
         m.insert("\u{1f369}", "doughnut");
         m.insert("\u{1f54a}", "dove");
         m.insert("\u{2199}", "down_left_arrow");
@@ -754,7 +752,6 @@ lazy_static! {
         m.insert("\u{1f332}", "evergreen_tree");
         m.insert("\u{1f411}", "ewe");
         m.insert("\u{2757}", "exclamation_mark");
-        m.insert("\u{2049}", "exclamation_question_mark");
         m.insert("\u{1f92f}", "exploding_head");
         m.insert("\u{1f611}", "expressionless_face");
         m.insert("\u{1f441}", "eye");
@@ -995,7 +992,6 @@ lazy_static! {
         m.insert("\u{261d}\u{1f3fe}", "index_pointing_up_medium_dark_skin_tone");
         m.insert("\u{261d}\u{1f3fc}", "index_pointing_up_medium_light_skin_tone");
         m.insert("\u{261d}\u{1f3fd}", "index_pointing_up_medium_skin_tone");
-        m.insert("\u{2139}", "information");
         m.insert("\u{1f524}", "input_latin_letters");
         m.insert("\u{1f521}", "input_latin_lowercase");
         m.insert("\u{1f520}", "input_latin_uppercase");
@@ -2629,3 +2625,30 @@ lazy_static! {
         m
     };
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use {IntoTokenizer, PositionalToken, Token};
+
+    #[test]
+    #[ignore]
+    fn emoji_map() {
+        let mut diff = Vec::new();
+        for (s,e) in EMOJIMAP.iter() {
+            let lib_res = s.into_tokens().unwrap().collect::<Vec<_>>();
+            let res = vec![PositionalToken { offset: 0, length: s.len(), token: Token::Emoji(e.to_string()) }];
+            if res != lib_res {
+                diff.push((res,lib_res))
+            }
+        }
+        if diff.len() > 0 {
+            for (r,lr) in &diff {
+                println!("true: {:?}",r);
+                println!("lib:  {:?}\n",lr);
+            }
+            panic!("EMOJIMAP diff count: {} of {}",diff.len(),EMOJIMAP.len());
+        }
+    }
+}
+
