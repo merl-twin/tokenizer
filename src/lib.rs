@@ -44,8 +44,8 @@ pub enum BasicToken<'t> {
     Alphanumeric(&'t str),
     Number(&'t str),
     Punctuation(&'t str),
-    Emoji(&'t str),
     Separator(&'t str),
+    Mixed(&'t str),
 }
 impl<'t> BasicToken<'t> {
     fn len(&self) -> usize {
@@ -53,7 +53,7 @@ impl<'t> BasicToken<'t> {
             BasicToken::Alphanumeric(s) |
             BasicToken::Number(s) |
             BasicToken::Punctuation(s) |
-            BasicToken::Emoji(s) |
+            BasicToken::Mixed(s) |
             BasicToken::Separator(s) => s.len(),
         }
     }
@@ -252,7 +252,7 @@ impl<'t> Iterator for Breaker<'t> {
                 if an {
                     return Some(BasicToken::Alphanumeric(w));
                 }
-                Some(BasicToken::Emoji(w))
+                Some(BasicToken::Mixed(w))
             },
             None => None,
         }
@@ -392,7 +392,7 @@ impl<'t> Tokens<'t> {
         self.offset += s.len();
         tok
     }
-    fn basic_emoji_to_pt(&mut self, s: &str) -> PositionalToken {
+    fn basic_mixed_to_pt(&mut self, s: &str) -> PositionalToken {
         let tok = PositionalToken {
             offset: self.offset,
             length: s.len(),
@@ -518,7 +518,7 @@ impl<'t> Tokens<'t> {
                     Some(BasicToken::Alphanumeric(s)) |
                     Some(BasicToken::Number(s)) |
                     Some(BasicToken::Punctuation(s)) |
-                    Some(BasicToken::Emoji(s)) => {
+                    Some(BasicToken::Mixed(s)) => {
                         url += s;
                     },
                 }
@@ -622,7 +622,7 @@ impl<'t> Tokens<'t> {
             Some(BasicToken::Alphanumeric(s)) => Some(self.basic_alphanumeric_to_pt(s)),
             Some(BasicToken::Number(s)) => Some(self.basic_number_to_pt(s)),
             Some(BasicToken::Punctuation(s)) => Some(self.basic_punctuation_to_pt(s)),
-            Some(BasicToken::Emoji(s)) => Some(self.basic_emoji_to_pt(s)),
+            Some(BasicToken::Mixed(s)) => Some(self.basic_mixed_to_pt(s)),
             Some(BasicToken::Separator(s)) => Some(self.basic_separator_to_pt(s)),
             None => None,
         }
