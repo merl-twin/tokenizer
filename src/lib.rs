@@ -278,6 +278,26 @@ impl<'t> Iterator for Breaker<'t> {
         match self.bounds.next() {
             Some(w) => {
                 if let Some(c) = one_char_word(w) {
+                    if (c == '+')||(c == '-') {
+                        let mut len = c.len_utf8();                        
+                        let num = if let Some(w2) = self.bounds.peek() {
+                            let mut num = true;  
+                            let mut dot_count = 0;
+                            for c in w2.chars() {
+                                num = num && (c.is_digit(10) || (c == '.'));
+                                if c == '.' { dot_count += 1; }
+                            }
+                            if dot_count>1 { num = false; }
+                            len += w2.len();
+                            num
+                        } else { false };
+                        if num {
+                            self.bounds.next();
+                            let p = &self.initial[self.offset .. self.offset+len];
+                            self.offset += len;
+                            return Some(BasicToken::Number(p));
+                        }                  
+                    }
                     if c.is_ascii_punctuation() || c.is_punctuation() || c.is_whitespace() || c.is_other_format() {
                         let mut len = c.len_utf8();
                         loop {
@@ -835,6 +855,38 @@ mod test {
         }
     }
 
+    fn check<T: PartialEq + std::fmt::Debug>(res: &Vec<T>, lib: &Vec<T>, _uws: &str) {
+        let mut lib = lib.iter();
+        let mut res = res.iter();
+        let mut diff = Vec::new();
+        loop {
+            match (lib.next(),res.next()) {
+                (Some(lw),Some(rw)) => {
+                    if lw != rw {
+                        diff.push(format!("LIB:  {:?}",lw));
+                        diff.push(format!("TEST: {:?}",rw));
+                        diff.push("".to_string())
+                    }
+                },
+                (Some(lw),None) => {
+                    diff.push(format!("LIB:  {:?}",lw));
+                    diff.push("TEST: ----".to_string());
+                    diff.push("".to_string())
+                },
+                (None,Some(rw)) => {
+                    diff.push("LIB:  ----".to_string());
+                    diff.push(format!("TEST: {:?}",rw));
+                    diff.push("".to_string())
+                },
+                (None,None) => break,
+            }
+        }
+        if diff.len() > 0 {
+            for ln in &diff { println!("{}",ln); }
+            panic!("Diff count: {}",diff.len()/3);
+        }
+    }
+
     #[test]
     fn char_tokens() {
         let uws = "[Oxana Putan|1712640565] shared the quick (\"brown\") fox can't jump 32.3 feet, right? 4pda etc. qeq U.S.A  asd\n\n\nBrr, it's 29.3°F!\n Русское предложение #36.6 для тестирования деления по юникод-словам...\n🇷🇺 🇸🇹\n👱🏿👶🏽👨🏽\n+Done! Готово";
@@ -1015,6 +1067,31 @@ mod test {
     }
 
     #[test]
+    fn plus_minus() {
+        let uws = "+23 -4.5 -34 +25.7 - 2 + 5.6";
+        let result = vec![
+            PositionalToken { offset: 0, length: 3, token: Token::Number(Number::Integer(23)) },
+            PositionalToken { offset: 3, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 4, length: 4, token: Token::Number(Number::Float(-4.5)) },
+            PositionalToken { offset: 8, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 9, length: 3, token: Token::Number(Number::Integer(-34)) },
+            PositionalToken { offset: 12, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 13, length: 5, token: Token::Number(Number::Float(25.7)) },
+            PositionalToken { offset: 18, length: 1, token: Token::Separator(Separator::Space) },           
+            PositionalToken { offset: 19, length: 1, token: Token::Punctuation("-".to_string()) },
+            PositionalToken { offset: 20, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 21, length: 1, token: Token::Number(Number::Integer(2)) },
+            PositionalToken { offset: 22, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 23, length: 1, token: Token::Punctuation("+".to_string()) },
+            PositionalToken { offset: 24, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 25, length: 3, token: Token::Number(Number::Float(5.6)) },
+            ];
+        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        check(&result,&lib_res,uws);
+        //print_result(&lib_res); panic!("")
+    } 
+    
+    #[test]
     #[ignore]
     fn woman_bouncing_ball() {
         let uws = "\u{26f9}\u{200d}\u{2640}";
@@ -1022,7 +1099,6 @@ mod test {
         let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
-        panic!();
     } 
     
     #[test]
