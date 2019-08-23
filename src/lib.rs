@@ -123,8 +123,11 @@ impl<T> Token<T> {
 }
 
 #[derive(Debug)]
-pub enum CharError {
-    BrokenBound,
+pub struct CharBoundError(PositionalToken);
+impl CharBoundError {
+    pub fn into_inner(self) -> PositionalToken {
+        self.0
+    }
 }
 
 struct ByteToChar(Vec<(usize,usize,usize)>); // byte-offset, char-offset, byte-length
@@ -164,7 +167,7 @@ pub struct CharToken {
     pub token: Token<CharToken>,   
 }
 impl CharToken {
-    fn try_from(pt: PositionalToken, btoc: &ByteToChar) -> Result<CharToken,CharError> {
+    fn try_from(pt: PositionalToken, btoc: &ByteToChar) -> Result<CharToken,CharBoundError> {
         match btoc.sub(pt.offset,pt.length) {
             Some((co,cl)) => Ok(CharToken{
                 byte_offset: pt.offset,
@@ -173,7 +176,7 @@ impl CharToken {
                 char_length: cl,
                 token: pt.token.try_map(|pt| CharToken::try_from(pt,btoc))?,
             }),
-            None => Err(CharError::BrokenBound),
+            None => Err(CharBoundError(pt)),
         }
     }
 }
@@ -321,7 +324,7 @@ impl<'t> Iterator for Breaker<'t> {
 
 pub trait Tokenizer {
     fn next_token(&mut self) -> Option<PositionalToken>;
-    fn next_char_token(&mut self) -> Option<Result<CharToken,CharError>>;
+    fn next_char_token(&mut self) -> Option<Result<CharToken,CharBoundError>>;
 }
 
 fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
@@ -716,7 +719,7 @@ impl<'t> Tokenizer for Tokens<'t> {
             }
         }
     }
-    fn next_char_token(&mut self) -> Option<Result<CharToken,CharError>> {
+    fn next_char_token(&mut self) -> Option<Result<CharToken,CharBoundError>> {
         self.next_token().map(|pt| CharToken::try_from(pt,&self.btoc))
     }
 }
