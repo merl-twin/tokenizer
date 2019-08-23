@@ -72,7 +72,7 @@ impl<'t> BasicToken<'t> {
 }
 
 #[derive(Debug,Clone,PartialEq,PartialOrd)]
-pub enum Token {
+pub enum Token<T> {
     Word(String),
     StrangeWord(String),
     Numerical(Numerical),
@@ -86,14 +86,103 @@ pub enum Token {
     UnicodeFormater(Formater),
     UnicodeModifier(char),
     Url(String),
-    BBCode { left: Vec<PositionalToken>, right: Vec<PositionalToken> },
+    BBCode { left: Vec<T>, right: Vec<T> },
+}
+impl<T> Token<T> {
+    fn try_map<U,F,E>(self, func: F) -> Result<Token<U>,E>
+        where F: Fn(T) -> Result<U,E>
+    {
+        match self {
+            Token::Word(v) => Ok(Token::Word(v)),
+            Token::StrangeWord(v) => Ok(Token::StrangeWord(v)),
+            Token::Numerical(v) => Ok(Token::Numerical(v)),
+            Token::Hashtag(v) => Ok(Token::Hashtag(v)),
+            Token::Mention(v) => Ok(Token::Mention(v)),
+            Token::Punctuation(v) => Ok(Token::Punctuation(v)),
+            Token::Number(v) => Ok(Token::Number(v)),
+            Token::Emoji(v) => Ok(Token::Emoji(v)),
+            Token::Unicode(v) => Ok(Token::Unicode(v)),
+            Token::Separator(v) => Ok(Token::Separator(v)),
+            Token::UnicodeFormater(v) => Ok(Token::UnicodeFormater(v)),
+            Token::UnicodeModifier(v) => Ok(Token::UnicodeModifier(v)),
+            Token::Url(v) => Ok(Token::Url(v)),
+            Token::BBCode { left, right } => Ok(Token::BBCode {
+                left: {
+                    let mut v = Vec::new();
+                    for t in left { v.push(func(t)?); }
+                    v
+                },
+                right: {
+                    let mut v = Vec::new();
+                    for t in right { v.push(func(t)?); }
+                    v
+                },
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CharError {
+    BrokenBound,
+}
+
+struct ByteToChar(Vec<(usize,usize,usize)>); // byte-offset, char-offset, byte-length
+impl ByteToChar {
+    fn new(s: &str) -> ByteToChar {
+        let mut v = Vec::new();
+        for (char_off,(byte_off,c)) in s.char_indices().enumerate() {
+            v.push((byte_off,char_off,c.len_utf8()));
+        }
+        ByteToChar(v)
+    }
+    #[allow(dead_code)]
+    fn index(&self, byte: usize) -> Option<usize> {
+        match self.0.binary_search_by_key(&byte,|(b,_,_)| *b) {
+            Ok(idx) => Some(self.0[idx].1),
+            Err(_) => None,
+        }
+    }
+    fn sub(&self, offset: usize, length: usize) -> Option<(usize,usize)> {
+        match (self.0.binary_search_by_key(&offset,|(b,_,_)| *b),self.0.binary_search_by_key(&(offset+length),|(b,_,_)| *b)) {
+            (Ok(b),Ok(e)) => Some((self.0[b].1,e-b)),
+            (Ok(b),Err(e)) if (e == self.0.len())&&(self.0[b..].iter().fold(0,|acc,(_,_,l)|acc+l) == length) => Some((self.0[b].1,e-b)),
+            r @ _ => {
+                println!("Err: ({},{}) -> {:?}\nBTOC: {:?}\n",offset,offset+length,r,self.0);
+                None
+            }
+        }
+    }
+}
+
+#[derive(Debug,Clone,PartialEq,PartialOrd)]
+pub struct CharToken {
+    pub byte_offset: usize,
+    pub byte_length: usize,
+    pub char_offset: usize,
+    pub char_length: usize,
+    pub token: Token<CharToken>,   
+}
+impl CharToken {
+    fn try_from(pt: PositionalToken, btoc: &ByteToChar) -> Result<CharToken,CharError> {
+        match btoc.sub(pt.offset,pt.length) {
+            Some((co,cl)) => Ok(CharToken{
+                byte_offset: pt.offset,
+                byte_length: pt.length,
+                char_offset: co,
+                char_length: cl,
+                token: pt.token.try_map(|pt| CharToken::try_from(pt,btoc))?,
+            }),
+            None => Err(CharError::BrokenBound),
+        }
+    }
 }
 
 #[derive(Debug,Clone,PartialEq,PartialOrd)]
 pub struct PositionalToken {
     pub offset: usize,
     pub length: usize,
-    pub token: Token,   
+    pub token: Token<PositionalToken>,   
 }
 
 #[derive(Debug,Copy,Clone,PartialEq,Eq,PartialOrd,Ord)]
@@ -232,6 +321,7 @@ impl<'t> Iterator for Breaker<'t> {
 
 pub trait Tokenizer {
     fn next_token(&mut self) -> Option<PositionalToken>;
+    fn next_char_token(&mut self) -> Option<Result<CharToken,CharError>>;
 }
 
 fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
@@ -274,6 +364,7 @@ pub struct Tokens<'t> {
     bounds: Breaker<'t>,
     buffer: VecDeque<BasicToken<'t>>,
     bbcodes: VecDeque<(usize,usize,usize)>,
+    btoc: ByteToChar,
 }
 impl<'t> Tokens<'t> {
     fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Result<Tokens<'a>,Untokenizable> {
@@ -285,6 +376,7 @@ impl<'t> Tokens<'t> {
             bounds: Breaker::new(s),
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
+            btoc: ByteToChar::new(s),
         })
     }
     fn basic<'a>(s: &'a str) -> Tokens<'a> {
@@ -293,6 +385,7 @@ impl<'t> Tokens<'t> {
             bounds: Breaker::new(s),
             buffer: VecDeque::new(),
             bbcodes: VecDeque::new(),
+            btoc: ByteToChar::new(s),
         }
     }
     fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
@@ -623,6 +716,9 @@ impl<'t> Tokenizer for Tokens<'t> {
             }
         }
     }
+    fn next_char_token(&mut self) -> Option<Result<CharToken,CharError>> {
+        self.next_token().map(|pt| CharToken::try_from(pt,&self.btoc))
+    }
 }
 
 impl<'t> Iterator for Tokens<'t> {
@@ -658,6 +754,7 @@ impl<'t> IntoTokenizer for &'t str {
 mod test {
     use super::*;
 
+    #[allow(dead_code)]
     fn print_pt(tok: &PositionalToken) -> String {
         let mut r = match &tok.token {
             Token::BBCode{ left, right } => {
@@ -670,7 +767,7 @@ mod test {
         r = r.replace("\")","\".to_string())");
         r
     }
-
+    #[allow(dead_code)]
     fn print_pts(lib_res: &Vec<PositionalToken>) -> String {
         let mut r = String::new();
         for tok in lib_res {        
@@ -679,9 +776,41 @@ mod test {
         }
         r
     }
-
+    #[allow(dead_code)]
     fn print_result(lib_res: &Vec<PositionalToken>) {
         let mut r = print_pts(lib_res);
+        r = r.replace("Separator(","Separator(Separator::");
+        r = r.replace("UnicodeFormater(","UnicodeFormater(Formater::");
+        r = r.replace("Number(","Number(Number::");
+        r = r.replace("Numerical(","Numerical(Numerical::");
+        println!("{}",r);
+    }
+
+    #[allow(dead_code)]
+    fn print_ct(tok: &CharToken) -> String {
+        let mut r = match &tok.token {
+            Token::BBCode{ left, right } => {
+                let left = print_cts(left);
+                let right = print_cts(right);
+                format!("CharToken {{ byte_offset: {}, byte_length: {}, char_offset: {}, char_length: {}, token: Token::BBCode {{ left: vec![\n{}], right: vec![\n{}] }} }},",tok.byte_offset,tok.byte_length,tok.char_offset,tok.char_length,left,right)
+            },
+            _ => format!("CharToken {{ byte_offset: {}, byte_length: {}, char_offset: {}, char_length: {}, token: Token::{:?} }},",tok.byte_offset,tok.byte_length,tok.char_offset,tok.char_length,tok.token),
+        };
+        r = r.replace("\")","\".to_string())");
+        r
+    }
+    #[allow(dead_code)]
+    fn print_cts(lib_res: &Vec<CharToken>) -> String {
+        let mut r = String::new();
+        for tok in lib_res {        
+            r += &print_ct(&tok);
+            r += "\n";
+        }
+        r
+    }
+    #[allow(dead_code)]
+    fn print_cresult(lib_res: &Vec<CharToken>) {
+        let mut r = print_cts(lib_res);
         r = r.replace("Separator(","Separator(Separator::");
         r = r.replace("UnicodeFormater(","UnicodeFormater(Formater::");
         r = r.replace("Number(","Number(Number::");
@@ -694,6 +823,118 @@ mod test {
         for i in 0 .. result.len() {
             assert_eq!(result[i],lib_res[i]);
         }
+    }
+
+    fn check_cresults(result: &Vec<CharToken>, lib_res: &Vec<CharToken>, _uws: &str) {
+        assert_eq!(result.len(),lib_res.len());
+        for i in 0 .. result.len() {
+            assert_eq!(result[i],lib_res[i]);
+        }
+    }
+
+    #[test]
+    fn char_tokens() {
+        let uws = "[Oxana Putan|1712640565] shared the quick (\"brown\") fox can't jump 32.3 feet, right? 4pda etc. qeq U.S.A  asd\n\n\nBrr, it's 29.3°F!\n Русское предложение #36.6 для тестирования деления по юникод-словам...\n🇷🇺 🇸🇹\n👱🏿👶🏽👨🏽\n+Done! Готово";
+        let result = vec![
+            CharToken { byte_offset: 0, byte_length: 24, char_offset: 0, char_length: 24, token: Token::BBCode { left: vec![
+                CharToken { byte_offset: 1, byte_length: 5, char_offset: 1, char_length: 5, token: Token::Word("Oxana".to_string()) },
+                CharToken { byte_offset: 6, byte_length: 1, char_offset: 6, char_length: 1, token: Token::Separator(Separator::Space) },
+                CharToken { byte_offset: 7, byte_length: 5, char_offset: 7, char_length: 5, token: Token::Word("Putan".to_string()) },
+                ], right: vec![
+                CharToken { byte_offset: 13, byte_length: 10, char_offset: 13, char_length: 10, token: Token::Number(Number::Integer(1712640565)) },
+                ] } },
+            CharToken { byte_offset: 24, byte_length: 1, char_offset: 24, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 25, byte_length: 6, char_offset: 25, char_length: 6, token: Token::Word("shared".to_string()) },
+            CharToken { byte_offset: 31, byte_length: 1, char_offset: 31, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 32, byte_length: 3, char_offset: 32, char_length: 3, token: Token::Word("the".to_string()) },
+            CharToken { byte_offset: 35, byte_length: 1, char_offset: 35, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 36, byte_length: 5, char_offset: 36, char_length: 5, token: Token::Word("quick".to_string()) },
+            CharToken { byte_offset: 41, byte_length: 1, char_offset: 41, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 42, byte_length: 1, char_offset: 42, char_length: 1, token: Token::Punctuation("(".to_string()) },
+            CharToken { byte_offset: 43, byte_length: 1, char_offset: 43, char_length: 1, token: Token::Punctuation("\"".to_string()) },
+            CharToken { byte_offset: 44, byte_length: 5, char_offset: 44, char_length: 5, token: Token::Word("brown".to_string()) },
+            CharToken { byte_offset: 49, byte_length: 1, char_offset: 49, char_length: 1, token: Token::Punctuation("\"".to_string()) },
+            CharToken { byte_offset: 50, byte_length: 1, char_offset: 50, char_length: 1, token: Token::Punctuation(")".to_string()) },
+            CharToken { byte_offset: 51, byte_length: 1, char_offset: 51, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 52, byte_length: 3, char_offset: 52, char_length: 3, token: Token::Word("fox".to_string()) },
+            CharToken { byte_offset: 55, byte_length: 1, char_offset: 55, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 56, byte_length: 5, char_offset: 56, char_length: 5, token: Token::Word("can\'t".to_string()) },
+            CharToken { byte_offset: 61, byte_length: 1, char_offset: 61, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 62, byte_length: 4, char_offset: 62, char_length: 4, token: Token::Word("jump".to_string()) },
+            CharToken { byte_offset: 66, byte_length: 1, char_offset: 66, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 67, byte_length: 4, char_offset: 67, char_length: 4, token: Token::Number(Number::Float(32.3)) },
+            CharToken { byte_offset: 71, byte_length: 1, char_offset: 71, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 72, byte_length: 4, char_offset: 72, char_length: 4, token: Token::Word("feet".to_string()) },
+            CharToken { byte_offset: 76, byte_length: 1, char_offset: 76, char_length: 1, token: Token::Punctuation(",".to_string()) },
+            CharToken { byte_offset: 77, byte_length: 1, char_offset: 77, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 78, byte_length: 5, char_offset: 78, char_length: 5, token: Token::Word("right".to_string()) },
+            CharToken { byte_offset: 83, byte_length: 1, char_offset: 83, char_length: 1, token: Token::Punctuation("?".to_string()) },
+            CharToken { byte_offset: 84, byte_length: 1, char_offset: 84, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 85, byte_length: 4, char_offset: 85, char_length: 4, token: Token::Numerical(Numerical::Measures("4pda".to_string())) },
+            CharToken { byte_offset: 89, byte_length: 1, char_offset: 89, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 90, byte_length: 3, char_offset: 90, char_length: 3, token: Token::Word("etc".to_string()) },
+            CharToken { byte_offset: 93, byte_length: 1, char_offset: 93, char_length: 1, token: Token::Punctuation(".".to_string()) },
+            CharToken { byte_offset: 94, byte_length: 1, char_offset: 94, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 95, byte_length: 3, char_offset: 95, char_length: 3, token: Token::Word("qeq".to_string()) },
+            CharToken { byte_offset: 98, byte_length: 1, char_offset: 98, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 99, byte_length: 5, char_offset: 99, char_length: 5, token: Token::Word("U.S.A".to_string()) },
+            CharToken { byte_offset: 104, byte_length: 2, char_offset: 104, char_length: 2, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 106, byte_length: 3, char_offset: 106, char_length: 3, token: Token::Word("asd".to_string()) },
+            CharToken { byte_offset: 109, byte_length: 3, char_offset: 109, char_length: 3, token: Token::Separator(Separator::Newline) },
+            CharToken { byte_offset: 112, byte_length: 3, char_offset: 112, char_length: 3, token: Token::Word("Brr".to_string()) },
+            CharToken { byte_offset: 115, byte_length: 1, char_offset: 115, char_length: 1, token: Token::Punctuation(",".to_string()) },
+            CharToken { byte_offset: 116, byte_length: 1, char_offset: 116, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 117, byte_length: 4, char_offset: 117, char_length: 4, token: Token::Word("it\'s".to_string()) },
+            CharToken { byte_offset: 121, byte_length: 1, char_offset: 121, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 122, byte_length: 4, char_offset: 122, char_length: 4, token: Token::Number(Number::Float(29.3)) },
+            CharToken { byte_offset: 126, byte_length: 2, char_offset: 126, char_length: 1, token: Token::Unicode("ub0".to_string()) },
+            CharToken { byte_offset: 128, byte_length: 1, char_offset: 127, char_length: 1, token: Token::Word("F".to_string()) },
+            CharToken { byte_offset: 129, byte_length: 1, char_offset: 128, char_length: 1, token: Token::Punctuation("!".to_string()) },
+            CharToken { byte_offset: 130, byte_length: 1, char_offset: 129, char_length: 1, token: Token::Separator(Separator::Newline) },
+            CharToken { byte_offset: 131, byte_length: 1, char_offset: 130, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 132, byte_length: 14, char_offset: 131, char_length: 7, token: Token::Word("Русское".to_string()) },
+            CharToken { byte_offset: 146, byte_length: 1, char_offset: 138, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 147, byte_length: 22, char_offset: 139, char_length: 11, token: Token::Word("предложение".to_string()) },
+            CharToken { byte_offset: 169, byte_length: 1, char_offset: 150, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 170, byte_length: 5, char_offset: 151, char_length: 5, token: Token::Hashtag("36.6".to_string()) },
+            CharToken { byte_offset: 175, byte_length: 1, char_offset: 156, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 176, byte_length: 6, char_offset: 157, char_length: 3, token: Token::Word("для".to_string()) },
+            CharToken { byte_offset: 182, byte_length: 1, char_offset: 160, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 183, byte_length: 24, char_offset: 161, char_length: 12, token: Token::Word("тестирования".to_string()) },
+            CharToken { byte_offset: 207, byte_length: 1, char_offset: 173, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 208, byte_length: 14, char_offset: 174, char_length: 7, token: Token::Word("деления".to_string()) },
+            CharToken { byte_offset: 222, byte_length: 1, char_offset: 181, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 223, byte_length: 4, char_offset: 182, char_length: 2, token: Token::Word("по".to_string()) },
+            CharToken { byte_offset: 227, byte_length: 1, char_offset: 184, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 228, byte_length: 12, char_offset: 185, char_length: 6, token: Token::Word("юникод".to_string()) },
+            CharToken { byte_offset: 240, byte_length: 1, char_offset: 191, char_length: 1, token: Token::Punctuation("-".to_string()) },
+            CharToken { byte_offset: 241, byte_length: 12, char_offset: 192, char_length: 6, token: Token::Word("словам".to_string()) },
+            CharToken { byte_offset: 253, byte_length: 3, char_offset: 198, char_length: 3, token: Token::Punctuation("...".to_string()) },
+            CharToken { byte_offset: 256, byte_length: 1, char_offset: 201, char_length: 1, token: Token::Separator(Separator::Newline) },
+            CharToken { byte_offset: 257, byte_length: 8, char_offset: 202, char_length: 2, token: Token::Emoji("russia".to_string()) },
+            CharToken { byte_offset: 265, byte_length: 1, char_offset: 204, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 266, byte_length: 8, char_offset: 205, char_length: 2, token: Token::Emoji("sao_tome_and_principe".to_string()) },
+            CharToken { byte_offset: 274, byte_length: 1, char_offset: 207, char_length: 1, token: Token::Separator(Separator::Newline) },
+            CharToken { byte_offset: 275, byte_length: 8, char_offset: 208, char_length: 2, token: Token::Emoji("blond_haired_person_dark_skin_tone".to_string()) },
+            CharToken { byte_offset: 283, byte_length: 8, char_offset: 210, char_length: 2, token: Token::Emoji("baby_medium_skin_tone".to_string()) },
+            CharToken { byte_offset: 291, byte_length: 8, char_offset: 212, char_length: 2, token: Token::Emoji("man_medium_skin_tone".to_string()) },
+            CharToken { byte_offset: 299, byte_length: 1, char_offset: 214, char_length: 1, token: Token::Separator(Separator::Newline) },
+            CharToken { byte_offset: 300, byte_length: 1, char_offset: 215, char_length: 1, token: Token::Punctuation("+".to_string()) },
+            CharToken { byte_offset: 301, byte_length: 4, char_offset: 216, char_length: 4, token: Token::Word("Done".to_string()) },
+            CharToken { byte_offset: 305, byte_length: 1, char_offset: 220, char_length: 1, token: Token::Punctuation("!".to_string()) },
+            CharToken { byte_offset: 306, byte_length: 1, char_offset: 221, char_length: 1, token: Token::Separator(Separator::Space) },
+            CharToken { byte_offset: 307, byte_length: 12, char_offset: 222, char_length: 6, token: Token::Word("Готово".to_string()) },
+            ];
+        let lib_res = {
+            let mut v = Vec::new();
+            let mut iter = uws.into_tokens().unwrap();
+            while let Some(rct) = iter.next_char_token() {
+                v.push(rct.unwrap());
+            }
+            v
+        };
+        //print_cresult(); panic!();
+        check_cresults(&result,&lib_res,uws);
     }
     
     #[test]
