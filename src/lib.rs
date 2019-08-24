@@ -192,6 +192,7 @@ pub struct PositionalToken {
 pub enum TokenizerOptions {
     DetectHtml,
     DetectBBCode,
+    IgnoreUrls,
 }
 
 struct ExtWordBounds<'t> {
@@ -388,6 +389,7 @@ pub struct Tokens<'t> {
     buffer: VecDeque<BasicToken<'t>>,
     bbcodes: VecDeque<(usize,usize,usize)>,
     btoc: ByteToChar,
+    do_check_url: bool,
 }
 impl<'t> Tokens<'t> {
     fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Result<Tokens<'a>,Untokenizable> {
@@ -400,6 +402,7 @@ impl<'t> Tokens<'t> {
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
             btoc: ByteToChar::new(s),
+            do_check_url: if options.contains(&TokenizerOptions::IgnoreUrls) { false } else { true },
         })
     }
     fn basic<'a>(s: &'a str) -> Tokens<'a> {
@@ -409,6 +412,7 @@ impl<'t> Tokens<'t> {
             buffer: VecDeque::new(),
             bbcodes: VecDeque::new(),
             btoc: ByteToChar::new(s),
+            do_check_url: false,
         }
     }
     fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
@@ -557,6 +561,7 @@ impl<'t> Tokens<'t> {
         tok
     }
     fn check_url(&mut self) -> Option<PositionalToken> {
+        if !self.do_check_url { return None; }
         let check = if self.buffer.len()>3 {
             match (&self.buffer[0],&self.buffer[1],&self.buffer[2]) {
                 (BasicToken::Alphanumeric("http"),BasicToken::Punctuation(":"),BasicToken::Punctuation("//")) |
