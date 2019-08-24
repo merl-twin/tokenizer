@@ -192,7 +192,7 @@ pub struct PositionalToken {
 pub enum TokenizerOptions {
     DetectHtml,
     DetectBBCode,
-    IgnoreUrls,
+    NoComplexTokens,
 }
 
 struct ExtWordBounds<'t> {
@@ -201,15 +201,17 @@ struct ExtWordBounds<'t> {
     bounds: UWordBounds<'t>,
     buffer: VecDeque<&'t str>,
     exceptions: BTreeSet<char>,
+    allow_complex: bool,
 }
 impl<'t> ExtWordBounds<'t> {
-    fn new<'a>(s: &'a str) -> ExtWordBounds<'a> {
+    fn new<'a>(s: &'a str, options: &BTreeSet<TokenizerOptions>) -> ExtWordBounds<'a> {
         ExtWordBounds {
             offset: 0,
             initial: s,
             bounds: s.split_word_bounds(),
             buffer: VecDeque::new(),
             exceptions: ['\u{200d}'].iter().cloned().collect(),
+            allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
         }
     }
 }
@@ -223,7 +225,7 @@ impl<'t> Iterator for ExtWordBounds<'t> {
                 let mut len = 0;
                 let mut chs = w.chars().peekable();
                 while let Some(c) = chs.next() {
-                    if c.is_other_format() {
+                    if c.is_other_format() || (!self.allow_complex && c.is_punctuation()) {
                         if (!self.exceptions.contains(&c))||
                             ((c == '\u{200d}') && chs.peek().is_none()) {
                             if len > 0 {
@@ -265,11 +267,11 @@ pub struct Breaker<'t> {
     bounds: std::iter::Peekable<ExtWordBounds<'t>>,
 }
 impl<'t> Breaker<'t> {
-    pub fn new<'a>(s: &'a str) -> Breaker<'a> {
+    pub fn new<'a>(s: &'a str, options: &BTreeSet<TokenizerOptions>) -> Breaker<'a> {
         Breaker {
             offset: 0,
             initial: s,
-            bounds: ExtWordBounds::new(s).peekable(),
+            bounds: ExtWordBounds::new(s,options).peekable(),
         }
     }
 }
@@ -389,7 +391,7 @@ pub struct Tokens<'t> {
     buffer: VecDeque<BasicToken<'t>>,
     bbcodes: VecDeque<(usize,usize,usize)>,
     btoc: ByteToChar,
-    do_check_url: bool,
+    allow_complex: bool,
 }
 impl<'t> Tokens<'t> {
     fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Result<Tokens<'a>,Untokenizable> {
@@ -398,21 +400,22 @@ impl<'t> Tokens<'t> {
         }
         Ok(Tokens {
             offset: 0,
-            bounds: Breaker::new(s),
+            bounds: Breaker::new(s, &options),
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
             btoc: ByteToChar::new(s),
-            do_check_url: if options.contains(&TokenizerOptions::IgnoreUrls) { false } else { true },
+            allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
         })
     }
     fn basic<'a>(s: &'a str) -> Tokens<'a> {
+        let options = vec![TokenizerOptions::NoComplexTokens].into_iter().collect();
         Tokens {
             offset: 0,
-            bounds: Breaker::new(s),
+            bounds: Breaker::new(s, &options),
             buffer: VecDeque::new(),
             bbcodes: VecDeque::new(),
             btoc: ByteToChar::new(s),
-            do_check_url: false,
+            allow_complex: false,
         }
     }
     fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
@@ -561,7 +564,7 @@ impl<'t> Tokens<'t> {
         tok
     }
     fn check_url(&mut self) -> Option<PositionalToken> {
-        if !self.do_check_url { return None; }
+        if !self.allow_complex { return None; }
         let check = if self.buffer.len()>3 {
             match (&self.buffer[0],&self.buffer[1],&self.buffer[2]) {
                 (BasicToken::Alphanumeric("http"),BasicToken::Punctuation(":"),BasicToken::Punctuation("//")) |
@@ -604,6 +607,7 @@ impl<'t> Tokens<'t> {
         } else { None }
     }
     fn check_hashtag(&mut self) -> Option<PositionalToken> {
+        if !self.allow_complex { return None; }
         let tok = if self.buffer.len()>1 {
             match (&self.buffer[0],&self.buffer[1]) {
                 (BasicToken::Punctuation("#"),BasicToken::Alphanumeric(s)) |
@@ -626,6 +630,7 @@ impl<'t> Tokens<'t> {
         tok
     }
     fn check_mention(&mut self) -> Option<PositionalToken> {
+        if !self.allow_complex { return None; }
         let tok = if self.buffer.len()>1 {
             match (&self.buffer[0],&self.buffer[1]) {
                 (BasicToken::Punctuation("@"),BasicToken::Alphanumeric(s)) |
