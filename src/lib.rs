@@ -224,8 +224,9 @@ impl<'t> Iterator for ExtWordBounds<'t> {
             Some(w) => {
                 let mut len = 0;
                 let mut chs = w.chars().peekable();
+                let num = match f64::from_str(w) { Ok(_) => true, Err(_) => false };
                 while let Some(c) = chs.next() {
-                    if c.is_other_format() || (!self.allow_complex && c.is_punctuation()) {
+                    if c.is_other_format() || (!num && !self.allow_complex && c.is_punctuation()) {
                         if (!self.exceptions.contains(&c))||
                             ((c == '\u{200d}') && chs.peek().is_none()) {
                             if len > 0 {
