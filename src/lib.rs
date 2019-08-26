@@ -791,7 +791,7 @@ mod test {
     fn print_result(lib_res: &Vec<PositionalToken>) {
         let mut r = print_pts(lib_res);
         r = r.replace("Separator(","Separator(Separator::");
-        r = r.replace("UnicodeFormater(","UnicodeFormater(Formater::");
+        r = r.replace("UnicodeFormatter(","UnicodeFormatter(Formatter::");
         r = r.replace("Number(","Number(Number::");
         r = r.replace("Numerical(","Numerical(Numerical::");
         println!("{}",r);
@@ -823,7 +823,7 @@ mod test {
     fn print_cresult(lib_res: &Vec<CharToken>) {
         let mut r = print_cts(lib_res);
         r = r.replace("Separator(","Separator(Separator::");
-        r = r.replace("UnicodeFormater(","UnicodeFormater(Formater::");
+        r = r.replace("UnicodeFormatter(","UnicodeFormatter(Formatter::");
         r = r.replace("Number(","Number(Number::");
         r = r.replace("Numerical(","Numerical(Numerical::");
         println!("{}",r);
@@ -970,7 +970,7 @@ mod test {
             ];
         let lib_res = {
             let mut v = Vec::new();
-            let mut iter = uws.into_tokens().unwrap();
+            let mut iter = uws.into_tokens();
             while let Some(rct) = iter.next_char_token() {
                 v.push(rct.unwrap());
             }
@@ -1050,7 +1050,7 @@ mod test {
             PositionalToken { offset: 221, length: 3, token: Token::Punctuation("...".to_string()) },
             PositionalToken { offset: 224, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
     }
 
@@ -1074,7 +1074,7 @@ mod test {
             PositionalToken { offset: 24, length: 1, token: Token::Separator(Separator::Space) },
             PositionalToken { offset: 25, length: 3, token: Token::Number(Number::Float(5.6)) },
             ];
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     } 
@@ -1084,7 +1084,7 @@ mod test {
     fn woman_bouncing_ball() {
         let uws = "\u{26f9}\u{200d}\u{2640}";
         let result = vec![PositionalToken { offset: 0, length: 9, token: Token::Emoji("woman_bouncing_ball".to_string()) }];
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     } 
@@ -1112,7 +1112,7 @@ mod test {
             PositionalToken { offset: 91, length: 1, token: Token::Separator(Separator::Newline) },
             ];
         
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!();
     }
@@ -1171,7 +1171,7 @@ mod test {
             PositionalToken { offset: 222, length: 6, token: Token::Word("asdfsd".to_string()) },
             PositionalToken { offset: 228, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
@@ -1335,13 +1335,13 @@ mod test {
                 ], right: vec![
                 ] } },
             ];
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         //print_result(&lib_res); panic!("");
         check_results(&result,&lib_res,uws);        
     }
 
 
-    #[test]
+    /*#[test]
     fn html() {
         let uws = "<div class=\"article article_view \" id=\"article_view_-113039156_9551\" data-article-url=\"/@chaibuket-o-chem-ne-zabyt-25-noyabrya\" data-audio-context=\"article:-113039156_9551\"><h1  class=\"article_decoration_first article_decoration_last\" >День Мамы </h1><p  class=\"article_decoration_first article_decoration_last\" >День, когда поздравляют мам, бабушек, сестер и жён — это всемирный праздник, называемый «День Мамы». В настоящее время его отмечают почти в каждой стране, просто везде разные даты и способы празднования. </p><h3  class=\"article_decoration_first article_decoration_last\" ><span class='article_anchor_title'>\n  <span class='article_anchor_button' id='pochemu-my-ego-prazdnuem'></span>\n  <span class='article_anchor_fsymbol'>П</span>\n</span>ПОЧЕМУ МЫ ЕГО ПРАЗДНУЕМ</h3><p  class=\"article_decoration_first article_decoration_last article_decoration_before\" >В 1987 году комитет госдумы по делам женщин, семьи и молодежи выступил с предложением учредить «День мамы», а сам приказ был подписан уже 30 января 1988 года Борисом Ельциным. Было решено, что ежегодно в России празднество дня мамы будет выпадать на последнее воскресенье ноября. </p><figure data-type=\"101\" data-mode=\"\"  class=\"article_decoration_first article_decoration_last\" >\n  <div class=\"article_figure_content\" style=\"width: 1125px\">\n    <div class=\"article_figure_sizer_content\"><div class=\"article_object_sizer_wrap\" data-sizes=\"[{&quot;s&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c0ffd/pcNJaBH3NDo.jpg&quot;,75,50],&quot;m&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c0ffe/ozCLs2kHtRY.jpg&quot;,130,87],&quot;x&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c0fff/E4KtTNDydzE.jpg&quot;,604,403],&quot;y&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1000/1nLxpYKavzU.jpg&quot;,807,538],&quot;z&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1001/IgEODe90yEk.jpg&quot;,1125,750],&quot;o&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1002/01faNwVZ2_E.jpg&quot;,130,87],&quot;p&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1003/baDFzbdRP2s.jpg&quot;,200,133],&quot;q&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1004/CY4khI6KJKA.jpg&quot;,320,213],&quot;r&quot;:[&quot;https://pp.userapi.com/c849128/v849128704/c1005/NOvAJ6-VltY.jpg&quot;,510,340]}]\">\n  <img class=\"article_object_sizer_inner article_object_photo__image_blur\" src=\"https://pp.userapi.com/c849128/v849128704/c0ffd/pcNJaBH3NDo.jpg\" data-baseurl=\"\"/>\n  \n</div></div>\n    <div class=\"article_figure_sizer\" style=\"padding-bottom: 66.666666666667%\"></div>";
         let result = vec![
@@ -1547,7 +1547,7 @@ mod test {
         //let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
         //check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
-    }
+    }*/
 
     #[test]
     fn vk_bbcode() {
@@ -1582,7 +1582,7 @@ mod test {
                 PositionalToken { offset: 91, length: 20, token: Token::Word("сохраненок".to_string()) },
                 ] } },
             ];
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         //print_result(&lib_res); panic!("");
         check_results(&result,&lib_res,uws);
     }
@@ -1602,7 +1602,7 @@ mod test {
     #[test]
     fn numerical() {
         let uws = "12.02.18 31.28.34 23.11.2018 123.568.365.234.578 127.0.0.1 1st 1кг 123123афываыв 12321фвафыов234выалфо 12_123_343.4234_4234";
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         //print_result(&lib_res); panic!("");
         let result = vec![
             PositionalToken { offset: 0, length: 8, token: Token::Numerical(Numerical::DotSeparated("12.02.18".to_string())) },
@@ -1655,35 +1655,35 @@ mod test {
     #[test]
     fn test_lang_zho() {
         let (uws,result) = get_lang_test(Lang::Zho);
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,&uws);
     }
 
     #[test]
     fn test_lang_jpn() {
         let (uws,result) = get_lang_test(Lang::Jpn);
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,&uws);
     }
 
     #[test]
     fn test_lang_kor() {
         let (uws,result) = get_lang_test(Lang::Kor);
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,&uws);
     }
 
     #[test]
     fn test_lang_ara() {
         let (uws,result) = get_lang_test(Lang::Ara);
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,&uws);
     }
 
     #[test]
     fn test_lang_ell() {
         let (uws,result) = get_lang_test(Lang::Ell);
-        let lib_res = uws.into_tokens().unwrap().collect::<Vec<_>>();
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,&uws);
     }
 
@@ -1944,11 +1944,11 @@ mod test {
                 ],
             Lang::Ara => vec![
                 PositionalToken { offset: 0, length: 14, token: Token::Word("لشکرکشی".to_string()) },
-                PositionalToken { offset: 14, length: 3, token: Token::UnicodeFormater(Formater::Char('\u{200c}')) },
+                PositionalToken { offset: 14, length: 3, token: Token::UnicodeFormatter(Formatter::Char('\u{200c}')) },
                 PositionalToken { offset: 17, length: 6, token: Token::Word("های".to_string()) },
                 PositionalToken { offset: 23, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 24, length: 6, token: Token::Word("روس".to_string()) },
-                PositionalToken { offset: 30, length: 3, token: Token::UnicodeFormater(Formater::Char('\u{200c}')) },
+                PositionalToken { offset: 30, length: 3, token: Token::UnicodeFormatter(Formatter::Char('\u{200c}')) },
                 PositionalToken { offset: 33, length: 6, token: Token::Word("های".to_string()) },
                 PositionalToken { offset: 39, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 40, length: 12, token: Token::Word("وارنگی".to_string()) },
@@ -1960,7 +1960,7 @@ mod test {
                 PositionalToken { offset: 69, length: 6, token: Token::Word("خزر".to_string()) },
                 PositionalToken { offset: 75, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 76, length: 12, token: Token::Word("مجموعه".to_string()) },
-                PositionalToken { offset: 88, length: 3, token: Token::UnicodeFormater(Formater::Char('\u{200c}')) },
+                PositionalToken { offset: 88, length: 3, token: Token::UnicodeFormatter(Formatter::Char('\u{200c}')) },
                 PositionalToken { offset: 91, length: 4, token: Token::Word("ای".to_string()) },
                 PositionalToken { offset: 95, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 96, length: 4, token: Token::Word("از".to_string()) },
@@ -1974,7 +1974,7 @@ mod test {
                 PositionalToken { offset: 128, length: 6, token: Token::Word("بین".to_string()) },
                 PositionalToken { offset: 134, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 135, length: 6, token: Token::Word("سال".to_string()) },
-                PositionalToken { offset: 141, length: 3, token: Token::UnicodeFormater(Formater::Char('\u{200c}')) },
+                PositionalToken { offset: 141, length: 3, token: Token::UnicodeFormatter(Formatter::Char('\u{200c}')) },
                 PositionalToken { offset: 144, length: 6, token: Token::Word("های".to_string()) },
                 PositionalToken { offset: 150, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 151, length: 6, token: Token::StrangeWord("۸۶۴".to_string()) },
