@@ -190,7 +190,6 @@ pub struct PositionalToken {
 
 #[derive(Debug,Copy,Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub enum TokenizerOptions {
-    DetectHtml,
     DetectBBCode,
     NoComplexTokens,
 }
@@ -366,25 +365,6 @@ fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
     res
 }
 
-fn detect_html(s: &str) -> usize {
-    lazy_static! {
-        static ref RE: Regex = Regex::new(r"</?\w+?.*?>").unwrap();
-    }
-    let mut res = VecDeque::new(); 
-    for cap in RE.captures_iter(s) {
-        //println!("{:?} {:?}",cap,cap.get(0).map(|m0| (m0.start(),m0.end()-m0.start())));
-        match cap.get(0) {
-            Some(m0) => res.push_back((m0.start(),m0.end()-m0.start())),
-            _ => continue,
-        }
-    }
-    res.len()
-}
-
-#[derive(Debug)]
-pub enum Untokenizable {
-    Html,
-}
 
 pub struct Tokens<'t> {
     offset: usize,
@@ -395,18 +375,15 @@ pub struct Tokens<'t> {
     allow_complex: bool,
 }
 impl<'t> Tokens<'t> {
-    fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Result<Tokens<'a>,Untokenizable> {
-        if options.contains(&TokenizerOptions::DetectHtml)&&(detect_html(s)>5) {
-            return Err(Untokenizable::Html)
-        }
-        Ok(Tokens {
+    fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Tokens<'a> {
+        Tokens {
             offset: 0,
             bounds: Breaker::new(s, &options),
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
             btoc: ByteToChar::new(s),
             allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
-        })
+        }
     }
     fn basic<'a>(s: &'a str) -> Tokens<'a> {
         let options = vec![TokenizerOptions::NoComplexTokens].into_iter().collect();
@@ -765,16 +742,16 @@ impl<'t> Iterator for Tokens<'t> {
 
 pub trait IntoTokenizer {
     type IntoTokens: Tokenizer;
-    fn into_tokens(self) -> Result<Self::IntoTokens,Untokenizable>;
-    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Result<Self::IntoTokens,Untokenizable>;
+    fn into_tokens(self) -> Self::IntoTokens;
+    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens;
     fn basic_tokens(self) -> Self::IntoTokens;
 }
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
-    fn into_tokens(self) -> Result<Self::IntoTokens,Untokenizable> {
-        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::DetectHtml].into_iter().collect())
+    fn into_tokens(self) -> Self::IntoTokens {
+        Tokens::new(self,vec![TokenizerOptions::DetectBBCode].into_iter().collect())
     }
-    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Result<Self::IntoTokens,Untokenizable> {
+    fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens {
         Tokens::new(self,options)
     }
     fn basic_tokens(self) -> Self::IntoTokens {
