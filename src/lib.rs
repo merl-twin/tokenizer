@@ -4,7 +4,7 @@ extern crate unicode_segmentation;
 extern crate unicode_categories;
 extern crate regex;
 
-use unicode_categories::UnicodeCategories;
+pub use unicode_categories::UnicodeCategories;
 use regex::Regex;
 
 use unicode_segmentation::{UnicodeSegmentation,UWordBounds};
