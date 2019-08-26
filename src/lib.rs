@@ -43,7 +43,7 @@ pub enum Separator {
 }
 
 #[derive(Debug,Clone,Copy,Eq,PartialEq,Ord,PartialOrd)]
-pub enum Formater {
+pub enum Formatter {
     Char(char),
     Joiner, // u{200d}
     Unknown,
@@ -55,7 +55,7 @@ pub enum BasicToken<'t> {
     Number(&'t str),
     Punctuation(&'t str),
     Separator(&'t str),
-    Formater(&'t str),
+    Formatter(&'t str),
     Mixed(&'t str),
 }
 impl<'t> BasicToken<'t> {
@@ -65,7 +65,7 @@ impl<'t> BasicToken<'t> {
             BasicToken::Number(s) |
             BasicToken::Punctuation(s) |
             BasicToken::Mixed(s) |
-            BasicToken::Formater(s) |
+            BasicToken::Formatter(s) |
             BasicToken::Separator(s) => s.len(),
         }
     }
@@ -83,7 +83,7 @@ pub enum Token<T> {
     Emoji(String),
     Unicode(String),
     Separator(Separator),
-    UnicodeFormater(Formater),
+    UnicodeFormatter(Formatter),
     UnicodeModifier(char),
     Url(String),
     BBCode { left: Vec<T>, right: Vec<T> },
@@ -103,7 +103,7 @@ impl<T> Token<T> {
             Token::Emoji(v) => Ok(Token::Emoji(v)),
             Token::Unicode(v) => Ok(Token::Unicode(v)),
             Token::Separator(v) => Ok(Token::Separator(v)),
-            Token::UnicodeFormater(v) => Ok(Token::UnicodeFormater(v)),
+            Token::UnicodeFormatter(v) => Ok(Token::UnicodeFormatter(v)),
             Token::UnicodeModifier(v) => Ok(Token::UnicodeModifier(v)),
             Token::Url(v) => Ok(Token::Url(v)),
             Token::BBCode { left, right } => Ok(Token::BBCode {
@@ -317,7 +317,7 @@ impl<'t> Iterator for Breaker<'t> {
                             return Some(BasicToken::Punctuation(p));
                         }
                         if c.is_other_format() {
-                            return Some(BasicToken::Formater(p));
+                            return Some(BasicToken::Formatter(p));
                         } else {
                             return Some(BasicToken::Separator(p));
                         }
@@ -438,10 +438,10 @@ impl<'t> Tokens<'t> {
         let tok = PositionalToken {
             offset: self.offset,
             length: s.len(),
-            token: Token::UnicodeFormater(match s.chars().next() {
-                Some('\u{200d}') => Formater::Joiner,
-                Some(c) => Formater::Char(c),
-                None => Formater::Unknown,
+            token: Token::UnicodeFormatter(match s.chars().next() {
+                Some('\u{200d}') => Formatter::Joiner,
+                Some(c) => Formatter::Char(c),
+                None => Formatter::Unknown,
             }),
         };
         self.offset += s.len();
@@ -591,7 +591,7 @@ impl<'t> Tokens<'t> {
                     Some(BasicToken::Alphanumeric(s)) |
                     Some(BasicToken::Number(s)) |
                     Some(BasicToken::Punctuation(s)) |
-                    Some(BasicToken::Formater(s)) |
+                    Some(BasicToken::Formatter(s)) |
                     Some(BasicToken::Mixed(s)) => {
                         url += s;
                     },
@@ -693,7 +693,7 @@ impl<'t> Tokens<'t> {
             Some(BasicToken::Punctuation(s)) => Some(self.basic_punctuation_to_pt(s)),
             Some(BasicToken::Mixed(s)) => Some(self.basic_mixed_to_pt(s)),
             Some(BasicToken::Separator(s)) => Some(self.basic_separator_to_pt(s)),
-            Some(BasicToken::Formater(s)) => Some(self.basic_formater_to_pt(s)),
+            Some(BasicToken::Formatter(s)) => Some(self.basic_formater_to_pt(s)),
             None => None,
         }
     }
