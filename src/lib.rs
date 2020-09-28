@@ -192,6 +192,7 @@ pub struct PositionalToken {
 pub enum TokenizerOptions {
     DetectBBCode,
     NoComplexTokens,
+    StructTokens,
 }
 
 struct ExtWordBounds<'t> {
@@ -225,19 +226,21 @@ impl<'t> Iterator for ExtWordBounds<'t> {
                 let mut chs = w.chars().peekable();
                 let num = match f64::from_str(w) { Ok(_) => true, Err(_) => false };
                 while let Some(c) = chs.next() {
-                    if c.is_other_format() || (!num && !self.allow_complex && c.is_punctuation()) {
-                        if (!self.exceptions.contains(&c))||
-                            ((c == '\u{200d}') && chs.peek().is_none()) {
-                            if len > 0 {
-                                self.buffer.push_back(&self.initial[self.offset .. self.offset+len]);
-                                self.offset += len;
-                                len = 0;
-                            }
-                            self.buffer.push_back(&self.initial[self.offset .. self.offset+c.len_utf8()]);
-                            self.offset += c.len_utf8();
-                        } else {
-                            len += c.len_utf8();
+                    let c_is_other_format = c.is_other_format();
+                    let c_is_punctuation = c.is_punctuation();
+                    let exceptions_contain_c = self.exceptions.contains(&c);
+                    if  ( c_is_other_format && !exceptions_contain_c )
+                        || ( (c == '\u{200d}') && chs.peek().is_none() ) 
+                        || ( c_is_punctuation && !num && !self.allow_complex && !exceptions_contain_c )
+                    {
+                        if len > 0 {
+                            self.buffer.push_back(&self.initial[self.offset .. self.offset+len]);
+                            self.offset += len;
+                            len = 0;
                         }
+                        self.buffer.push_back(&self.initial[self.offset .. self.offset+c.len_utf8()]);
+                        self.offset += c.len_utf8();
+                        
                     } else {
                         len += c.len_utf8();
                     }
@@ -372,7 +375,7 @@ pub struct Tokens<'t> {
     buffer: VecDeque<BasicToken<'t>>,
     bbcodes: VecDeque<(usize,usize,usize)>,
     btoc: ByteToChar,
-    allow_complex: bool,
+    allow_structs: bool,
 }
 impl<'t> Tokens<'t> {
     fn new<'a>(s: &'a str, options: BTreeSet<TokenizerOptions>) -> Tokens<'a> {
@@ -382,7 +385,7 @@ impl<'t> Tokens<'t> {
             buffer: VecDeque::new(),
             bbcodes: if options.contains(&TokenizerOptions::DetectBBCode) { detect_bbcodes(s) } else { VecDeque::new() },
             btoc: ByteToChar::new(s),
-            allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
+            allow_structs: if options.contains(&TokenizerOptions::StructTokens) { true } else { false },
         }
     }
     fn basic<'a>(s: &'a str) -> Tokens<'a> {
@@ -393,7 +396,7 @@ impl<'t> Tokens<'t> {
             buffer: VecDeque::new(),
             bbcodes: VecDeque::new(),
             btoc: ByteToChar::new(s),
-            allow_complex: false,
+            allow_structs: false,
         }
     }
     fn basic_separator_to_pt(&mut self, s: &str) -> PositionalToken {
@@ -542,7 +545,7 @@ impl<'t> Tokens<'t> {
         tok
     }
     fn check_url(&mut self) -> Option<PositionalToken> {
-        if !self.allow_complex { return None; }
+        if !self.allow_structs { return None; }
         let check = if self.buffer.len()>3 {
             match (&self.buffer[0],&self.buffer[1],&self.buffer[2]) {
                 (BasicToken::Alphanumeric("http"),BasicToken::Punctuation(":"),BasicToken::Punctuation("//")) |
@@ -585,7 +588,7 @@ impl<'t> Tokens<'t> {
         } else { None }
     }
     fn check_hashtag(&mut self) -> Option<PositionalToken> {
-        if !self.allow_complex { return None; }
+        if !self.allow_structs { return None; }
         let tok = if self.buffer.len()>1 {
             match (&self.buffer[0],&self.buffer[1]) {
                 (BasicToken::Punctuation("#"),BasicToken::Alphanumeric(s)) |
@@ -608,7 +611,7 @@ impl<'t> Tokens<'t> {
         tok
     }
     fn check_mention(&mut self) -> Option<PositionalToken> {
-        if !self.allow_complex { return None; }
+        if !self.allow_structs { return None; }
         let tok = if self.buffer.len()>1 {
             match (&self.buffer[0],&self.buffer[1]) {
                 (BasicToken::Punctuation("@"),BasicToken::Alphanumeric(s)) |
@@ -745,14 +748,18 @@ pub trait IntoTokenizer {
     fn into_tokens(self) -> Self::IntoTokens;
     fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens;
     fn basic_tokens(self) -> Self::IntoTokens;
+    fn complex_tokens(self) -> Self::IntoTokens;
 }
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
     fn into_tokens(self) -> Self::IntoTokens {
-        Tokens::new(self,vec![TokenizerOptions::DetectBBCode].into_iter().collect())
+        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::StructTokens].into_iter().collect())
     }
     fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens {
         Tokens::new(self,options)
+    }
+    fn complex_tokens(self) -> Self::IntoTokens {
+        Tokens::new(self,vec![TokenizerOptions::StructTokens].into_iter().collect())
     }
     fn basic_tokens(self) -> Self::IntoTokens {
         Tokens::basic(self)
@@ -1171,7 +1178,7 @@ mod test {
             PositionalToken { offset: 222, length: 6, token: Token::Word("asdfsd".to_string()) },
             PositionalToken { offset: 228, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.complex_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
     }
