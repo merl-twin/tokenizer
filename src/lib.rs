@@ -753,13 +753,13 @@ pub trait IntoTokenizer {
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
     fn into_tokens(self) -> Self::IntoTokens {
-        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::StructTokens].into_iter().collect())
+        Tokens::new(self,vec![].into_iter().collect())
     }
     fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens {
         Tokens::new(self,options)
     }
     fn complex_tokens(self) -> Self::IntoTokens {
-        Tokens::new(self,vec![TokenizerOptions::StructTokens].into_iter().collect())
+        Tokens::new(self,vec![TokenizerOptions::DetectBBCode,TokenizerOptions::StructTokens].into_iter().collect())
     }
     fn basic_tokens(self) -> Self::IntoTokens {
         Tokens::basic(self)
@@ -977,7 +977,7 @@ mod test {
             ];
         let lib_res = {
             let mut v = Vec::new();
-            let mut iter = uws.into_tokens();
+            let mut iter = uws.complex_tokens();
             while let Some(rct) = iter.next_char_token() {
                 v.push(rct.unwrap());
             }
@@ -986,9 +986,84 @@ mod test {
         //print_cresult(); panic!();
         check_cresults(&result,&lib_res,uws);
     }
-    
+
     #[test]
     fn general() {
+        let uws = "The quick (\"brown\") fox can't jump 32.3 feet, right? 4pda etc. qeq U.S.A  asd\n\n\nBrr, it's 29.3°F!\n Русское предложение #36.6 для тестирования деления по юникод-словам...\n";
+        let result = vec![
+            PositionalToken { offset: 0, length: 3, token: Token::Word("The".to_string()) },
+            PositionalToken { offset: 3, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 4, length: 5, token: Token::Word("quick".to_string()) },
+            PositionalToken { offset: 9, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 10, length: 1, token: Token::Punctuation("(".to_string()) },
+            PositionalToken { offset: 11, length: 1, token: Token::Punctuation("\"".to_string()) },
+            PositionalToken { offset: 12, length: 5, token: Token::Word("brown".to_string()) },
+            PositionalToken { offset: 17, length: 1, token: Token::Punctuation("\"".to_string()) },
+            PositionalToken { offset: 18, length: 1, token: Token::Punctuation(")".to_string()) },
+            PositionalToken { offset: 19, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 20, length: 3, token: Token::Word("fox".to_string()) },
+            PositionalToken { offset: 23, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 24, length: 5, token: Token::Word("can\'t".to_string()) },
+            PositionalToken { offset: 29, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 30, length: 4, token: Token::Word("jump".to_string()) },
+            PositionalToken { offset: 34, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 35, length: 4, token: Token::Number(Number::Float(32.3)) },
+            PositionalToken { offset: 39, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 40, length: 4, token: Token::Word("feet".to_string()) },
+            PositionalToken { offset: 44, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 45, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 46, length: 5, token: Token::Word("right".to_string()) },
+            PositionalToken { offset: 51, length: 1, token: Token::Punctuation("?".to_string()) },
+            PositionalToken { offset: 52, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 53, length: 4, token: Token::Numerical(Numerical::Measures("4pda".to_string())) }, // TODO
+            PositionalToken { offset: 57, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 58, length: 3, token: Token::Word("etc".to_string()) },
+            PositionalToken { offset: 61, length: 1, token: Token::Punctuation(".".to_string()) },
+            PositionalToken { offset: 62, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 63, length: 3, token: Token::Word("qeq".to_string()) },
+            PositionalToken { offset: 66, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 67, length: 5, token: Token::Word("U.S.A".to_string()) },
+            PositionalToken { offset: 72, length: 2, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 74, length: 3, token: Token::Word("asd".to_string()) },
+            PositionalToken { offset: 77, length: 3, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 80, length: 3, token: Token::Word("Brr".to_string()) },
+            PositionalToken { offset: 83, length: 1, token: Token::Punctuation(",".to_string()) },
+            PositionalToken { offset: 84, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 85, length: 4, token: Token::Word("it\'s".to_string()) },
+            PositionalToken { offset: 89, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 90, length: 4, token: Token::Number(Number::Float(29.3)) },
+            PositionalToken { offset: 94, length: 2, token: Token::Unicode("ub0".to_string()) },
+            PositionalToken { offset: 96, length: 1, token: Token::Word("F".to_string()) },
+            PositionalToken { offset: 97, length: 1, token: Token::Punctuation("!".to_string()) },
+            PositionalToken { offset: 98, length: 1, token: Token::Separator(Separator::Newline) },
+            PositionalToken { offset: 99, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 100, length: 14, token: Token::Word("Русское".to_string()) },
+            PositionalToken { offset: 114, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 115, length: 22, token: Token::Word("предложение".to_string()) },
+            PositionalToken { offset: 137, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 138, length: 1, token: Token::Punctuation("#".to_string()) },
+            PositionalToken { offset: 139, length: 4, token: Token::Number(Number::Float(36.6)) },
+            PositionalToken { offset: 143, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 144, length: 6, token: Token::Word("для".to_string()) },
+            PositionalToken { offset: 150, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 151, length: 24, token: Token::Word("тестирования".to_string()) },
+            PositionalToken { offset: 175, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 176, length: 14, token: Token::Word("деления".to_string()) },
+            PositionalToken { offset: 190, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 191, length: 4, token: Token::Word("по".to_string()) },
+            PositionalToken { offset: 195, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 196, length: 12, token: Token::Word("юникод".to_string()) },
+            PositionalToken { offset: 208, length: 1, token: Token::Punctuation("-".to_string()) },
+            PositionalToken { offset: 209, length: 12, token: Token::Word("словам".to_string()) },
+            PositionalToken { offset: 221, length: 3, token: Token::Punctuation("...".to_string()) },
+            PositionalToken { offset: 224, length: 1, token: Token::Separator(Separator::Newline) },
+            ];
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+    }
+    
+    #[test]
+    fn general_complex() {
         let uws = "The quick (\"brown\") fox can't jump 32.3 feet, right? 4pda etc. qeq U.S.A  asd\n\n\nBrr, it's 29.3°F!\n Русское предложение #36.6 для тестирования деления по юникод-словам...\n";
         let result = vec![
             PositionalToken { offset: 0, length: 3, token: Token::Word("The".to_string()) },
@@ -1057,7 +1132,7 @@ mod test {
             PositionalToken { offset: 221, length: 3, token: Token::Punctuation("...".to_string()) },
             PositionalToken { offset: 224, length: 1, token: Token::Separator(Separator::Newline) },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.complex_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
     }
 
@@ -1342,7 +1417,7 @@ mod test {
                 ], right: vec![
                 ] } },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.complex_tokens().collect::<Vec<_>>();
         //print_result(&lib_res); panic!("");
         check_results(&result,&lib_res,uws);        
     }
@@ -1589,7 +1664,7 @@ mod test {
                 PositionalToken { offset: 91, length: 20, token: Token::Word("сохраненок".to_string()) },
                 ] } },
             ];
-        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        let lib_res = uws.complex_tokens().collect::<Vec<_>>();
         //print_result(&lib_res); panic!("");
         check_results(&result,&lib_res,uws);
     }
