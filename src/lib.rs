@@ -205,6 +205,7 @@ struct ExtWordBounds<'t> {
     exceptions: BTreeSet<char>,
     allow_complex: bool,
     split_dot: bool,
+    split_underscore: bool,
 }
 impl<'t> ExtWordBounds<'t> {
     fn new<'a>(s: &'a str, options: &BTreeSet<TokenizerOptions>) -> ExtWordBounds<'a> {
@@ -238,6 +239,7 @@ impl<'t> Iterator for ExtWordBounds<'t> {
                         || ( (c == '\u{200d}') && chs.peek().is_none() ) 
                         || ( c_is_punctuation && !num && !self.allow_complex && !exceptions_contain_c )
                         || ( (c == '.') && !num && self.split_dot )
+                        || ( (c == '_') && !num && self.split_underscore )
                     {
                         if len > 0 {
                             self.buffer.push_back(&self.initial[self.offset .. self.offset+len]);
