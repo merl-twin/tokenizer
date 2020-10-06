@@ -1,6 +1,6 @@
 [package]
 name = "tokenizer"
-version = "0.2.6"
+version = "0.2.7"
 authors = ["merl <merl.001.mia@gmail.com>"]
 
 [dependencies]

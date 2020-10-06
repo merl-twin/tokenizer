@@ -761,7 +761,7 @@ pub trait IntoTokenizer {
 impl<'t> IntoTokenizer for &'t str {
     type IntoTokens = Tokens<'t>;
     fn into_tokens(self) -> Self::IntoTokens {
-        Tokens::new(self,vec![].into_iter().collect())
+        Tokens::new(self,vec![TokenizerOptions::SplitDot,TokenizerOptions::SplitUnderscore].into_iter().collect())
     }
     fn into_tokens_with_options(self, options:BTreeSet<TokenizerOptions>) -> Self::IntoTokens {
         Tokens::new(self,options)
