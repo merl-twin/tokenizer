@@ -193,6 +193,8 @@ pub enum TokenizerOptions {
     DetectBBCode,
     NoComplexTokens,
     StructTokens,
+    SplitDot,
+    SplitUnderscore,
 }
 
 struct ExtWordBounds<'t> {
@@ -213,7 +215,8 @@ impl<'t> ExtWordBounds<'t> {
             buffer: VecDeque::new(),
             exceptions: ['\u{200d}'].iter().cloned().collect(),
             allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
-            split_dot: true,
+            split_dot: if options.contains(&TokenizerOptions::SplitDot) { true } else { false },
+            split_underscore: if options.contains(&TokenizerOptions::SplitUnderscore) { true } else { false },
         }
     }
 }
