@@ -202,6 +202,7 @@ struct ExtWordBounds<'t> {
     buffer: VecDeque<&'t str>,
     exceptions: BTreeSet<char>,
     allow_complex: bool,
+    split_dot: bool,
 }
 impl<'t> ExtWordBounds<'t> {
     fn new<'a>(s: &'a str, options: &BTreeSet<TokenizerOptions>) -> ExtWordBounds<'a> {
@@ -212,6 +213,7 @@ impl<'t> ExtWordBounds<'t> {
             buffer: VecDeque::new(),
             exceptions: ['\u{200d}'].iter().cloned().collect(),
             allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
+            split_dot: true,
         }
     }
 }
@@ -232,6 +234,7 @@ impl<'t> Iterator for ExtWordBounds<'t> {
                     if  ( c_is_other_format && !exceptions_contain_c )
                         || ( (c == '\u{200d}') && chs.peek().is_none() ) 
                         || ( c_is_punctuation && !num && !self.allow_complex && !exceptions_contain_c )
+                        || ( (c == '.') && !num && self.split_dot )
                     {
                         if len > 0 {
                             self.buffer.push_back(&self.initial[self.offset .. self.offset+len]);
