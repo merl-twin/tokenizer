@@ -198,10 +198,45 @@ pub enum TokenizerOptions {
     SplitColon,
 }
 
+enum ExceptionBounds<'t> {
+    Bounds(UWordBounds<'t>),
+    Vec {
+        s: &'t str,
+        v: std::vec::IntoIter<(usize,usize)>, // offset + length
+    },
+}
+impl<'t> Iterator for ExceptionBounds<'t> {
+    type Item = &'t str;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ExceptionBounds::Bounds(bounds) => bounds.next(),
+            ExceptionBounds::Vec{ s, v } => match v.next() {
+                None => None,
+                Some((o,l)) => Some(&s[o..(o+l)]),
+            },
+        }
+    }
+}
+
+impl<'t> ExceptionBounds<'t> {
+    fn new<'a>(s: &'a str) -> ExceptionBounds<'a> {
+        match s.find("\u{0060}") {
+            None => ExceptionBounds::Bounds(s.split_word_bounds()),
+            Some(..) => {
+                let new_s = s.replace("\u{0060}","\u{0027}");
+                ExceptionBounds::Vec {
+                    s: s,
+                    v: new_s.split_word_bound_indices().into_iter().map(|(offset,st)| (offset,st.len())).collect::<Vec<_>>().into_iter(),
+                }
+            },
+        }
+    }
+}
+
 struct ExtWordBounds<'t> {
     offset: usize,
     initial: &'t str,
-    bounds: UWordBounds<'t>,
+    bounds: ExceptionBounds<'t>,
     buffer: VecDeque<&'t str>,
     exceptions: BTreeSet<char>,
     allow_complex: bool,
@@ -214,7 +249,7 @@ impl<'t> ExtWordBounds<'t> {
         ExtWordBounds {
             offset: 0,
             initial: s,
-            bounds: s.split_word_bounds(),
+            bounds: ExceptionBounds::new(s),
             buffer: VecDeque::new(),
             exceptions: ['\u{200d}'].iter().cloned().collect(),
             allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
@@ -461,22 +496,33 @@ impl<'t> Tokens<'t> {
             offset: self.offset,
             length: s.len(),
             token: {
-                let rs = s.replace("\u{fe0f}","");
-                match EMOJIMAP.get(&rs as &str) {
-                    Some(em) => Token::Emoji(em.to_string()),
-                    None => match one_char_word(&rs) {
-                        Some(c) if c.is_symbol_modifier() => Token::UnicodeModifier(c),
-                        Some(_) | None => Token::Unicode({
-                            let mut us = "".to_string();
-                            for c in rs.chars() {
-                                if us!="" { us += "_"; }
-                                us += "u";
-                                let ns = format!("{}",c.escape_unicode());
-                                us += &ns[3 .. ns.len()-1];
-                            }
-                            us
-                        })
-                    },
+                let mut word = true;
+                for c in s.chars() {
+                    match c.is_alphanumeric() || c.is_digit(10) || c.is_punctuation() || (c == '\u{0060}') {
+                        true => {},
+                        false => { word = false; },
+                    }
+                }
+                if word {
+                     Token::StrangeWord(s.to_string())
+                } else {
+                    let rs = s.replace("\u{fe0f}","");
+                    match EMOJIMAP.get(&rs as &str) {
+                        Some(em) => Token::Emoji(em.to_string()),
+                        None => match one_char_word(&rs) {
+                            Some(c) if c.is_symbol_modifier() => Token::UnicodeModifier(c),
+                            Some(_) | None => Token::Unicode({
+                                let mut us = "".to_string();
+                                for c in rs.chars() {
+                                    if us!="" { us += "_"; }
+                                    us += "u";
+                                    let ns = format!("{}",c.escape_unicode());
+                                    us += &ns[3 .. ns.len()-1];
+                                }
+                                us
+                            })
+                        },
+                    }
                 }
             }
         };
@@ -892,6 +938,27 @@ mod test {
             for ln in &diff { println!("{}",ln); }
             panic!("Diff count: {}",diff.len()/3);
         }
+    }
+
+    #[test]
+    fn mixed_but_word() {
+        let uws = "L’Oreal";
+        let result = vec![PositionalToken { offset: 0, length: 9, token: Token::StrangeWord("L’Oreal".to_string()) }];        
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+    }
+
+    #[test]
+    fn apostrophe() {
+        let uws = "l'oreal; l\u{0060}oreal";
+        let result = vec![
+            PositionalToken { offset: 0, length: 7, token: Token::Word("l\'oreal".to_string()) },
+            PositionalToken { offset: 7, length: 1, token: Token::Punctuation(";".to_string()) },
+            PositionalToken { offset: 8, length: 1, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 9, length: 7, token: Token::StrangeWord("l`oreal".to_string()) },
+        ];        
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
     }
 
     #[test]
