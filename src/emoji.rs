@@ -2637,7 +2637,7 @@ mod test {
         let mut diff = Vec::new();
         for (s,e) in EMOJIMAP.iter() {
             let lib_res = s.into_tokens().collect::<Vec<_>>();
-            let res = vec![PositionalToken { offset: 0, length: s.len(), token: Token::Emoji(e.to_string()) }];
+            let res = vec![PositionalToken { offset: 0, length: s.len(), token: Token::Emoji(e) }];
             if res != lib_res {
                 diff.push((res,lib_res))
             }

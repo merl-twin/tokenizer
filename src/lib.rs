@@ -71,16 +71,35 @@ impl<'t> BasicToken<'t> {
     }
 }
 
+#[cfg(feature = "strings")]
 #[derive(Debug,Clone,PartialEq,PartialOrd)]
 pub enum Token<T> {
     Word(String),
     StrangeWord(String),
-    Numerical(Numerical),
     Hashtag(String),
     Mention(String),
     Punctuation(String),
+    Numerical(Numerical),
     Number(Number),
-    Emoji(String),
+    Emoji(&'static str),
+    Unicode(String),
+    Separator(Separator),
+    UnicodeFormatter(Formatter),
+    UnicodeModifier(char),
+    Url(String),
+    BBCode { left: Vec<T>, right: Vec<T> },
+}
+#[cfg(not(feature = "strings"))]
+#[derive(Debug,Clone,PartialEq,PartialOrd)]
+pub enum Token<T> {
+    Word,
+    StrangeWord,
+    Hashtag,
+    Mention,
+    Punctuation,
+    Numerical(Numerical),
+    Number(Number),
+    Emoji(&'static str),
     Unicode(String),
     Separator(Separator),
     UnicodeFormatter(Formatter),
@@ -89,6 +108,7 @@ pub enum Token<T> {
     BBCode { left: Vec<T>, right: Vec<T> },
 }
 impl<T> Token<T> {
+    #[cfg(feature = "strings")]
     fn try_map<U,F,E>(self, func: F) -> Result<Token<U>,E>
         where F: Fn(T) -> Result<U,E>
     {
@@ -99,6 +119,39 @@ impl<T> Token<T> {
             Token::Hashtag(v) => Ok(Token::Hashtag(v)),
             Token::Mention(v) => Ok(Token::Mention(v)),
             Token::Punctuation(v) => Ok(Token::Punctuation(v)),
+            Token::Number(v) => Ok(Token::Number(v)),
+            Token::Emoji(v) => Ok(Token::Emoji(v)),
+            Token::Unicode(v) => Ok(Token::Unicode(v)),
+            Token::Separator(v) => Ok(Token::Separator(v)),
+            Token::UnicodeFormatter(v) => Ok(Token::UnicodeFormatter(v)),
+            Token::UnicodeModifier(v) => Ok(Token::UnicodeModifier(v)),
+            Token::Url(v) => Ok(Token::Url(v)),
+            Token::BBCode { left, right } => Ok(Token::BBCode {
+                left: {
+                    let mut v = Vec::new();
+                    for t in left { v.push(func(t)?); }
+                    v
+                },
+                right: {
+                    let mut v = Vec::new();
+                    for t in right { v.push(func(t)?); }
+                    v
+                },
+            }),
+        }
+    }
+
+    #[cfg(not(feature = "strings"))]
+        fn try_map<U,F,E>(self, func: F) -> Result<Token<U>,E>
+        where F: Fn(T) -> Result<U,E>
+    {
+        match self {
+            Token::Word => Ok(Token::Word),
+            Token::StrangeWord => Ok(Token::StrangeWord),
+            Token::Numerical(v) => Ok(Token::Numerical(v)),
+            Token::Hashtag => Ok(Token::Hashtag),
+            Token::Mention => Ok(Token::Mention),
+            Token::Punctuation => Ok(Token::Punctuation),
             Token::Number(v) => Ok(Token::Number(v)),
             Token::Emoji(v) => Ok(Token::Emoji(v)),
             Token::Unicode(v) => Ok(Token::Unicode(v)),
@@ -483,7 +536,12 @@ impl<'t> Tokens<'t> {
                 Err(_) => {
                     match f64::from_str(s) {
                         Ok(n) => Token::Number(Number::Float(n)),
-                        Err(..) => Token::Word(s.to_string()),
+                        Err(..) => {
+                            #[cfg(feature = "strings")]
+                            { Token::Word(s.to_string()) }
+                            #[cfg(not(feature = "strings"))]
+                            { Token::Word }  
+                        },
                     }
                 }
             },
@@ -504,11 +562,14 @@ impl<'t> Tokens<'t> {
                     }
                 }
                 if word {
-                     Token::StrangeWord(s.to_string())
+                    #[cfg(feature = "strings")]
+                    { Token::StrangeWord(s.to_string()) }
+                    #[cfg(not(feature = "strings"))]
+                    { Token::StrangeWord }  
                 } else {
                     let rs = s.replace("\u{fe0f}","");
                     match EMOJIMAP.get(&rs as &str) {
-                        Some(em) => Token::Emoji(em.to_string()),
+                        Some(em) => Token::Emoji(em),
                         None => match one_char_word(&rs) {
                             Some(c) if c.is_symbol_modifier() => Token::UnicodeModifier(c),
                             Some(_) | None => Token::Unicode({
@@ -581,11 +642,17 @@ impl<'t> Tokens<'t> {
                 }
                 (false,false,_,true,false) => {
                     // Word
-                    Token::Word(s.to_string())
+                    #[cfg(feature = "strings")]
+                    { Token::Word(s.to_string()) }
+                    #[cfg(not(feature = "strings"))]
+                    { Token::Word }  
                 },
                 (false,false,_,_,_) => {
-                    // Strange
-                    Token::StrangeWord(s.to_string())
+                    // Strange                    
+                    #[cfg(feature = "strings")]
+                    { Token::StrangeWord(s.to_string()) }
+                    #[cfg(not(feature = "strings"))]
+                    { Token::StrangeWord }   
                 },
                 (false,true,_,_,_) => unreachable!(),
             },
@@ -597,7 +664,12 @@ impl<'t> Tokens<'t> {
         let tok = PositionalToken {
             offset: self.offset,
             length: s.len(),
-            token: Token::Punctuation(s.to_string()),
+            token: {
+                #[cfg(feature = "strings")]
+                { Token::Punctuation(s.to_string()) }
+                #[cfg(not(feature = "strings"))]
+                { Token::Punctuation }
+            },
         };
         self.offset += s.len();
         tok
@@ -654,7 +726,12 @@ impl<'t> Tokens<'t> {
                     let tok = PositionalToken {
                         offset: self.offset,
                         length: s.len()+1,
-                        token: Token::Hashtag(format!("{}",s)),
+                        token: {
+                            #[cfg(feature = "strings")]
+                            { Token::Hashtag(s.to_string()) }
+                            #[cfg(not(feature = "strings"))]
+                            { Token::Hashtag }
+                        },
                     };
                     self.offset += s.len()+1;
                     Some(tok)
@@ -677,7 +754,12 @@ impl<'t> Tokens<'t> {
                     let tok = PositionalToken {
                         offset: self.offset,
                         length: s.len()+1,
-                        token: Token::Mention(format!("{}",s)),
+                        token: {
+                            #[cfg(feature = "strings")]
+                            { Token::Mention(s.to_string()) }
+                            #[cfg(not(feature = "strings"))]
+                            { Token::Mention }
+                        },
                     };
                     self.offset += s.len()+1;
                     Some(tok)
@@ -1040,13 +1122,13 @@ mod test {
             CharToken { byte_offset: 241, byte_length: 12, char_offset: 192, char_length: 6, token: Token::Word("словам".to_string()) },
             CharToken { byte_offset: 253, byte_length: 3, char_offset: 198, char_length: 3, token: Token::Punctuation("...".to_string()) },
             CharToken { byte_offset: 256, byte_length: 1, char_offset: 201, char_length: 1, token: Token::Separator(Separator::Newline) },
-            CharToken { byte_offset: 257, byte_length: 8, char_offset: 202, char_length: 2, token: Token::Emoji("russia".to_string()) },
+            CharToken { byte_offset: 257, byte_length: 8, char_offset: 202, char_length: 2, token: Token::Emoji("russia") },
             CharToken { byte_offset: 265, byte_length: 1, char_offset: 204, char_length: 1, token: Token::Separator(Separator::Space) },
-            CharToken { byte_offset: 266, byte_length: 8, char_offset: 205, char_length: 2, token: Token::Emoji("sao_tome_and_principe".to_string()) },
+            CharToken { byte_offset: 266, byte_length: 8, char_offset: 205, char_length: 2, token: Token::Emoji("sao_tome_and_principe") },
             CharToken { byte_offset: 274, byte_length: 1, char_offset: 207, char_length: 1, token: Token::Separator(Separator::Newline) },
-            CharToken { byte_offset: 275, byte_length: 8, char_offset: 208, char_length: 2, token: Token::Emoji("blond_haired_person_dark_skin_tone".to_string()) },
-            CharToken { byte_offset: 283, byte_length: 8, char_offset: 210, char_length: 2, token: Token::Emoji("baby_medium_skin_tone".to_string()) },
-            CharToken { byte_offset: 291, byte_length: 8, char_offset: 212, char_length: 2, token: Token::Emoji("man_medium_skin_tone".to_string()) },
+            CharToken { byte_offset: 275, byte_length: 8, char_offset: 208, char_length: 2, token: Token::Emoji("blond_haired_person_dark_skin_tone") },
+            CharToken { byte_offset: 283, byte_length: 8, char_offset: 210, char_length: 2, token: Token::Emoji("baby_medium_skin_tone") },
+            CharToken { byte_offset: 291, byte_length: 8, char_offset: 212, char_length: 2, token: Token::Emoji("man_medium_skin_tone") },
             CharToken { byte_offset: 299, byte_length: 1, char_offset: 214, char_length: 1, token: Token::Separator(Separator::Newline) },
             CharToken { byte_offset: 300, byte_length: 1, char_offset: 215, char_length: 1, token: Token::Punctuation("+".to_string()) },
             CharToken { byte_offset: 301, byte_length: 4, char_offset: 216, char_length: 4, token: Token::Word("Done".to_string()) },
@@ -1323,7 +1405,7 @@ mod test {
     #[ignore]
     fn woman_bouncing_ball() {
         let uws = "\u{26f9}\u{200d}\u{2640}";
-        let result = vec![PositionalToken { offset: 0, length: 9, token: Token::Emoji("woman_bouncing_ball".to_string()) }];
+        let result = vec![PositionalToken { offset: 0, length: 9, token: Token::Emoji("woman_bouncing_ball") }];
         let lib_res = uws.into_tokens().collect::<Vec<_>>();
         check_results(&result,&lib_res,uws);
         //print_result(&lib_res); panic!("")
@@ -1333,15 +1415,15 @@ mod test {
     fn emoji_and_rusabbr_default() {
         let uws = "🇷🇺 🇸🇹\n👱🏿👶🏽👨🏽\n👱\nС.С.С.Р.\n👨‍👩‍👦‍👦\n🧠\n";
         let result = vec![
-            PositionalToken { offset: 0, length: 8, token: Token::Emoji("russia".to_string()) },
+            PositionalToken { offset: 0, length: 8, token: Token::Emoji("russia") },
             PositionalToken { offset: 8, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 9, length: 8, token: Token::Emoji("sao_tome_and_principe".to_string()) },
+            PositionalToken { offset: 9, length: 8, token: Token::Emoji("sao_tome_and_principe") },
             PositionalToken { offset: 17, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 18, length: 8, token: Token::Emoji("blond_haired_person_dark_skin_tone".to_string()) },
-            PositionalToken { offset: 26, length: 8, token: Token::Emoji("baby_medium_skin_tone".to_string()) },
-            PositionalToken { offset: 34, length: 8, token: Token::Emoji("man_medium_skin_tone".to_string()) },
+            PositionalToken { offset: 18, length: 8, token: Token::Emoji("blond_haired_person_dark_skin_tone") },
+            PositionalToken { offset: 26, length: 8, token: Token::Emoji("baby_medium_skin_tone") },
+            PositionalToken { offset: 34, length: 8, token: Token::Emoji("man_medium_skin_tone") },
             PositionalToken { offset: 42, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 43, length: 4, token: Token::Emoji("blond_haired_person".to_string()) },
+            PositionalToken { offset: 43, length: 4, token: Token::Emoji("blond_haired_person") },
             PositionalToken { offset: 47, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 48, length: 2, token: Token::Word("С".to_string()) },
             PositionalToken { offset: 50, length: 1, token: Token::Punctuation(".".to_string()) },
@@ -1352,9 +1434,9 @@ mod test {
             PositionalToken { offset: 57, length: 2, token: Token::Word("Р".to_string()) },
             PositionalToken { offset: 59, length: 1, token: Token::Punctuation(".".to_string()) },
             PositionalToken { offset: 60, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 61, length: 25, token: Token::Emoji("family_man_woman_boy_boy".to_string()) },
+            PositionalToken { offset: 61, length: 25, token: Token::Emoji("family_man_woman_boy_boy") },
             PositionalToken { offset: 86, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 87, length: 4, token: Token::Emoji("brain".to_string()) },
+            PositionalToken { offset: 87, length: 4, token: Token::Emoji("brain") },
             PositionalToken { offset: 91, length: 1, token: Token::Separator(Separator::Newline) },
             ];
         
@@ -1367,22 +1449,22 @@ mod test {
     fn emoji_and_rusabbr_no_split() {
         let uws = "🇷🇺 🇸🇹\n👱🏿👶🏽👨🏽\n👱\nС.С.С.Р.\n👨‍👩‍👦‍👦\n🧠\n";
         let result = vec![
-            PositionalToken { offset: 0, length: 8, token: Token::Emoji("russia".to_string()) },
+            PositionalToken { offset: 0, length: 8, token: Token::Emoji("russia") },
             PositionalToken { offset: 8, length: 1, token: Token::Separator(Separator::Space) },
-            PositionalToken { offset: 9, length: 8, token: Token::Emoji("sao_tome_and_principe".to_string()) },
+            PositionalToken { offset: 9, length: 8, token: Token::Emoji("sao_tome_and_principe") },
             PositionalToken { offset: 17, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 18, length: 8, token: Token::Emoji("blond_haired_person_dark_skin_tone".to_string()) },
-            PositionalToken { offset: 26, length: 8, token: Token::Emoji("baby_medium_skin_tone".to_string()) },
-            PositionalToken { offset: 34, length: 8, token: Token::Emoji("man_medium_skin_tone".to_string()) },
+            PositionalToken { offset: 18, length: 8, token: Token::Emoji("blond_haired_person_dark_skin_tone") },
+            PositionalToken { offset: 26, length: 8, token: Token::Emoji("baby_medium_skin_tone") },
+            PositionalToken { offset: 34, length: 8, token: Token::Emoji("man_medium_skin_tone") },
             PositionalToken { offset: 42, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 43, length: 4, token: Token::Emoji("blond_haired_person".to_string()) },
+            PositionalToken { offset: 43, length: 4, token: Token::Emoji("blond_haired_person") },
             PositionalToken { offset: 47, length: 1, token: Token::Separator(Separator::Newline) },
             PositionalToken { offset: 48, length: 11, token: Token::Word("С.С.С.Р".to_string()) },
             PositionalToken { offset: 59, length: 1, token: Token::Punctuation(".".to_string()) },
             PositionalToken { offset: 60, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 61, length: 25, token: Token::Emoji("family_man_woman_boy_boy".to_string()) },
+            PositionalToken { offset: 61, length: 25, token: Token::Emoji("family_man_woman_boy_boy") },
             PositionalToken { offset: 86, length: 1, token: Token::Separator(Separator::Newline) },
-            PositionalToken { offset: 87, length: 4, token: Token::Emoji("brain".to_string()) },
+            PositionalToken { offset: 87, length: 4, token: Token::Emoji("brain") },
             PositionalToken { offset: 91, length: 1, token: Token::Separator(Separator::Newline) },
             ];
         
@@ -1830,9 +1912,9 @@ mod test {
             PositionalToken { offset: 0, length: 52, token: Token::BBCode { left: vec![
                 PositionalToken { offset: 1, length: 13, token: Token::Numerical(Numerical::Alphanumeric("club113623432".to_string())) },
                 ], right: vec![
-                PositionalToken { offset: 15, length: 4, token: Token::Emoji("purple_heart".to_string()) },
-                PositionalToken { offset: 19, length: 4, token: Token::Emoji("purple_heart".to_string()) },
-                PositionalToken { offset: 23, length: 4, token: Token::Emoji("purple_heart".to_string()) },
+                PositionalToken { offset: 15, length: 4, token: Token::Emoji("purple_heart") },
+                PositionalToken { offset: 19, length: 4, token: Token::Emoji("purple_heart") },
+                PositionalToken { offset: 23, length: 4, token: Token::Emoji("purple_heart") },
                 PositionalToken { offset: 27, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 28, length: 1, token: Token::Punctuation("-".to_string()) },
                 PositionalToken { offset: 29, length: 1, token: Token::Separator(Separator::Space) },
@@ -1845,9 +1927,9 @@ mod test {
             PositionalToken { offset: 54, length: 58, token: Token::BBCode { left: vec![
                 PositionalToken { offset: 55, length: 13, token: Token::Numerical(Numerical::Alphanumeric("club113623432".to_string())) },
                 ], right: vec![
-                PositionalToken { offset: 69, length: 4, token: Token::Emoji("yellow_heart".to_string()) },
-                PositionalToken { offset: 73, length: 4, token: Token::Emoji("yellow_heart".to_string()) },
-                PositionalToken { offset: 77, length: 4, token: Token::Emoji("yellow_heart".to_string()) },
+                PositionalToken { offset: 69, length: 4, token: Token::Emoji("yellow_heart") },
+                PositionalToken { offset: 73, length: 4, token: Token::Emoji("yellow_heart") },
+                PositionalToken { offset: 77, length: 4, token: Token::Emoji("yellow_heart") },
                 PositionalToken { offset: 81, length: 1, token: Token::Separator(Separator::Space) },
                 PositionalToken { offset: 82, length: 1, token: Token::Punctuation("-".to_string()) },
                 PositionalToken { offset: 83, length: 1, token: Token::Separator(Separator::Space) },
