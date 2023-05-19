@@ -1,9 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
-extern crate unicode_segmentation;
-extern crate unicode_categories;
-extern crate regex;
-
 pub use unicode_categories::UnicodeCategories;
 use regex::Regex;
 
@@ -183,6 +177,7 @@ impl CharBoundError {
     }
 }
 
+#[derive(Debug)]
 struct ByteToChar(Vec<(usize,usize,usize)>); // byte-offset, char-offset, byte-length
 impl ByteToChar {
     fn new(s: &str) -> ByteToChar {
@@ -251,12 +246,19 @@ pub enum TokenizerOptions {
     SplitColon,
 }
 
+
 enum ExceptionBounds<'t> {
     Bounds(UWordBounds<'t>),
     Vec {
         s: &'t str,
         v: std::vec::IntoIter<(usize,usize)>, // offset + length
     },
+}
+impl<'t> std::fmt::Debug for ExceptionBounds<'t> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExceptionBounds")
+         .finish()
+    }
 }
 impl<'t> Iterator for ExceptionBounds<'t> {
     type Item = &'t str;
@@ -286,6 +288,7 @@ impl<'t> ExceptionBounds<'t> {
     }
 }
 
+#[derive(Debug)]
 struct ExtWordBounds<'t> {
     offset: usize,
     initial: &'t str,
@@ -324,11 +327,11 @@ impl<'t> Iterator for ExtWordBounds<'t> {
                 let mut chs = w.chars().peekable();
                 let num = match f64::from_str(w) { Ok(_) => true, Err(_) => false };
                 while let Some(c) = chs.next() {
-                    //let c_is_other_format = false; //c.is_other_format();
+                    //let c_is_other_format = c.is_other_format();
                     //let exceptions_contain_c = self.exceptions.contains(&c);
                     let c_is_spliter = self.ext_spliters.contains(&c);
                     let c_is_punctuation = c.is_punctuation();                    
-                    if  c_is_spliter //( c_is_other_format && !exceptions_contain_c )                        
+                    if  c_is_spliter //( c_is_other_format && !exceptions_contain_c )
                         || ( (c == '\u{200d}') && chs.peek().is_none() ) 
                         || ( c_is_punctuation && !num && !self.allow_complex ) // && !exceptions_contain_c 
                         || ( (c == '.') && !num && self.split_dot )
@@ -366,6 +369,7 @@ fn one_char_word(w: &str) -> Option<char> {
     }
 }
 
+#[derive(Debug)]
 pub struct Breaker<'t> {
     offset: usize,
     initial: &'t str,
@@ -456,7 +460,7 @@ pub trait Tokenizer {
 }
 
 fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
-    lazy_static! {
+    lazy_static::lazy_static! {
         static ref RE: Regex = Regex::new(r"\[(.*?)\|(.*?)\]").unwrap();
     }
     let mut res = VecDeque::new(); 
@@ -470,7 +474,7 @@ fn detect_bbcodes(s: &str) -> VecDeque<(usize,usize,usize)> {
     res
 }
 
-
+#[derive(Debug)]
 pub struct Tokens<'t> {
     offset: usize,
     bounds: Breaker<'t>,
@@ -558,10 +562,24 @@ impl<'t> Tokens<'t> {
             token: {
                 let mut word = true;
                 let mut has_word_parts = false;
+                let mut first = true;
+                let mut same = false;
+                let mut one_c = ' ';
                 for c in s.chars() {
                     match c.is_alphanumeric() || c.is_digit(10) || c.is_punctuation() || (c == '\u{0060}') {
                         true => { has_word_parts = true; },
                         false => { word = false; },
+                    }
+                    match first {
+                        true => { one_c = c; first = false; same = true; },
+                        false => if one_c != c { same = false; }
+                    }
+                }
+                if !first && same && (one_c.is_whitespace() || one_c.is_other_format()) {
+                    if one_c.is_whitespace() {
+                        return self.basic_separator_to_pt(s);                       
+                    } else {
+                        return self.basic_formater_to_pt(s)
                     }
                 }
                 if word {
@@ -1033,6 +1051,24 @@ mod test {
         }
     }
 
+    #[test]
+    fn spaces() {
+        let uws = "    spaces    too   many   apces   ";
+        let result = vec![
+            PositionalToken { offset: 0, length: 4, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 4, length: 6, token: Token::Word("spaces".to_string()) },
+            PositionalToken { offset: 10, length: 4, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 14, length: 3, token: Token::Word("too".to_string()) },
+            PositionalToken { offset: 17, length: 3, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 20, length: 4, token: Token::Word("many".to_string()) },
+            PositionalToken { offset: 24, length: 3, token: Token::Separator(Separator::Space) },
+            PositionalToken { offset: 27, length: 5, token: Token::Word("apces".to_string()) },
+            PositionalToken { offset: 32, length: 3, token: Token::Separator(Separator::Space) },
+        ];        
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);
+    }
+    
     #[test]
     fn word_with_inner_hyphens() {
         let uws = "Опро­сы по­ка­зы­ва­ют";

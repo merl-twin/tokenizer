@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-lazy_static! {
+lazy_static::lazy_static! {
     pub static ref EMOJIMAP: BTreeMap<&'static str, &'static str> = {
         let mut m = BTreeMap::new();
         m.insert("\u{1f947}", "1st_place_medal");
@@ -2629,7 +2629,7 @@ lazy_static! {
 #[cfg(test)]
 mod test {
     use super::*;
-    use {IntoTokenizer, PositionalToken, Token};
+    use crate::{IntoTokenizer, PositionalToken, Token};
 
     #[test]
     #[ignore]
