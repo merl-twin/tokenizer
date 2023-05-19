@@ -291,7 +291,7 @@ struct ExtWordBounds<'t> {
     initial: &'t str,
     bounds: ExceptionBounds<'t>,
     buffer: VecDeque<&'t str>,
-    exceptions: BTreeSet<char>,
+    ext_spliters: BTreeSet<char>,
     allow_complex: bool,
     split_dot: bool,
     split_underscore: bool,
@@ -304,7 +304,8 @@ impl<'t> ExtWordBounds<'t> {
             initial: s,
             bounds: ExceptionBounds::new(s),
             buffer: VecDeque::new(),
-            exceptions: ['\u{200d}'].iter().cloned().collect(),
+            //exceptions: ['\u{200d}'].iter().cloned().collect(),
+            ext_spliters: ['\u{200c}'].iter().cloned().collect(),
             allow_complex: if options.contains(&TokenizerOptions::NoComplexTokens) { false } else { true },
             split_dot: if options.contains(&TokenizerOptions::SplitDot) { true } else { false },
             split_underscore: if options.contains(&TokenizerOptions::SplitUnderscore) { true } else { false },
@@ -323,12 +324,13 @@ impl<'t> Iterator for ExtWordBounds<'t> {
                 let mut chs = w.chars().peekable();
                 let num = match f64::from_str(w) { Ok(_) => true, Err(_) => false };
                 while let Some(c) = chs.next() {
-                    let c_is_other_format = c.is_other_format();
-                    let c_is_punctuation = c.is_punctuation();
-                    let exceptions_contain_c = self.exceptions.contains(&c);
-                    if  ( c_is_other_format && !exceptions_contain_c )
+                    //let c_is_other_format = false; //c.is_other_format();
+                    //let exceptions_contain_c = self.exceptions.contains(&c);
+                    let c_is_spliter = self.ext_spliters.contains(&c);
+                    let c_is_punctuation = c.is_punctuation();                    
+                    if  c_is_spliter //( c_is_other_format && !exceptions_contain_c )                        
                         || ( (c == '\u{200d}') && chs.peek().is_none() ) 
-                        || ( c_is_punctuation && !num && !self.allow_complex && !exceptions_contain_c )
+                        || ( c_is_punctuation && !num && !self.allow_complex ) // && !exceptions_contain_c 
                         || ( (c == '.') && !num && self.split_dot )
                         || ( (c == '_') && !num && self.split_underscore )
                         || ( (c == ':') && self.split_colon )
@@ -555,9 +557,10 @@ impl<'t> Tokens<'t> {
             length: s.len(),
             token: {
                 let mut word = true;
+                let mut has_word_parts = false;
                 for c in s.chars() {
                     match c.is_alphanumeric() || c.is_digit(10) || c.is_punctuation() || (c == '\u{0060}') {
-                        true => {},
+                        true => { has_word_parts = true; },
                         false => { word = false; },
                     }
                 }
@@ -572,16 +575,24 @@ impl<'t> Tokens<'t> {
                         Some(em) => Token::Emoji(em),
                         None => match one_char_word(&rs) {
                             Some(c) if c.is_symbol_modifier() => Token::UnicodeModifier(c),
-                            Some(_) | None => Token::Unicode({
-                                let mut us = "".to_string();
-                                for c in rs.chars() {
-                                    if us!="" { us += "_"; }
-                                    us += "u";
-                                    let ns = format!("{}",c.escape_unicode());
-                                    us += &ns[3 .. ns.len()-1];
-                                }
-                                us
-                            })
+                            Some(_) | None => match has_word_parts {
+                                true => {
+                                    #[cfg(feature = "strings")]
+                                    { Token::StrangeWord(s.to_string()) }
+                                    #[cfg(not(feature = "strings"))]
+                                    { Token::StrangeWord }  
+                                },
+                                false => Token::Unicode({
+                                    let mut us = "".to_string();
+                                    for c in rs.chars() {
+                                        if us!="" { us += "_"; }
+                                        us += "u";
+                                        let ns = format!("{}",c.escape_unicode());
+                                        us += &ns[3 .. ns.len()-1];
+                                    }
+                                    us
+                                }),
+                            }
                         },
                     }
                 }
@@ -1020,6 +1031,16 @@ mod test {
             for ln in &diff { println!("{}",ln); }
             panic!("Diff count: {}",diff.len()/3);
         }
+    }
+
+    #[test]
+    fn word_with_inner_hyphens() {
+        let uws = "Опро­сы по­ка­зы­ва­ют";
+        let result = vec![PositionalToken { offset: 0, length: 14, token: Token::StrangeWord("Опро­сы".to_string()) },
+                          PositionalToken { offset: 14, length: 1, token: Token::Separator(Separator::Space) },
+                          PositionalToken { offset: 15, length: 28, token: Token::StrangeWord("по­ка­зы­ва­ют".to_string()) }];        
+        let lib_res = uws.into_tokens().collect::<Vec<_>>();
+        check_results(&result,&lib_res,uws);        
     }
 
     #[test]
