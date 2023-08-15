@@ -373,6 +373,7 @@ fn one_char_word(w: &str) -> Option<char> {
 pub struct Breaker<'t> {
     offset: usize,
     initial: &'t str,
+    prev_is_separator: bool,
     bounds: std::iter::Peekable<ExtWordBounds<'t>>,
 }
 impl<'t> Breaker<'t> {
@@ -380,17 +381,15 @@ impl<'t> Breaker<'t> {
         Breaker {
             offset: 0,
             initial: s,
+            prev_is_separator: true,
             bounds: ExtWordBounds::new(s,options).peekable(),
         }
     }
-}
-impl<'t> Iterator for Breaker<'t> {
-    type Item = BasicToken<'t>;
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_token(&mut self) -> Option<BasicToken<'t>> {
         match self.bounds.next() {
             Some(w) => {
                 if let Some(c) = one_char_word(w) {
-                    if (c == '+')||(c == '-') {
+                    if ((c == '+')||(c == '-')) && self.prev_is_separator {
                         let mut len = c.len_utf8();                        
                         let num = if let Some(w2) = self.bounds.peek() {
                             let mut num = true;  
@@ -451,6 +450,17 @@ impl<'t> Iterator for Breaker<'t> {
             },
             None => None,
         }
+    }
+}
+impl<'t> Iterator for Breaker<'t> {
+    type Item = BasicToken<'t>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let tok = self.next_token();
+        self.prev_is_separator = match tok {
+            Some(BasicToken::Separator(..)) => true,
+            _ => false,
+        };
+        tok
     }
 }
 
